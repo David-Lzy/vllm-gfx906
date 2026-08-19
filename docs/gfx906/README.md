@@ -1,0 +1,35 @@
+# AMD gfx906 support
+
+This directory tracks the MI50/MI60 (`gfx906`) maintenance work for this fork.
+The project targets a validated vLLM v0.26 release while keeping the existing
+production-compatible branch available for rollback.
+
+## Status
+
+- Validated production lineage: `gfx906/v0.23.1rc0.x`
+- Integration target: upstream `v0.26.0`
+- Primary parity model: Qwen3.5 9B AWQ multimodal
+- Target hardware: four AMD MI50 GPUs, tested as independent TP1 workers and,
+  where required, TP4
+- Release policy: `main` receives only versions validated on real gfx906
+  hardware
+
+The v0.26 work is experimental until the release and production-canary gates
+are complete. Model weights, caches, build outputs, credentials, and
+machine-specific deployment configuration do not belong in this repository.
+
+## Documents
+
+- [v0.26 roadmap](roadmap-v0.26.md)
+- [Compatibility matrix](compatibility-matrix.md)
+- [Patch ledger](patch-ledger.md)
+- [Benchmark protocol](benchmark-protocol.md)
+- [Release process](release-process.md)
+
+## Priorities
+
+1. Build stock v0.26 for gfx906 and establish a text-only floor.
+2. Restore Qwen3.5 AWQ multimodal parity.
+3. Prevent performance regressions against the validated production lineage.
+4. Port optional DFlash, MoE, TurboQuant KV, and FP8 KV features separately.
+5. Publish a reproducible image only after hardware validation and canary soak.
