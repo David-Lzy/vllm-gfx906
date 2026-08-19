@@ -25,6 +25,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
 - [Release process](release-process.md)
+- [Current production partial baseline](baselines/production-v0231-partial-20260819.md)
 
 ## Priorities
 

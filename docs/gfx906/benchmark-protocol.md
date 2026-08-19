@@ -20,6 +20,18 @@ cache state, and request concurrency are recorded.
 Cache-reuse runs may be reported separately, but do not replace cold or
 non-reused image results.
 
+Every measured scenario must compare the Router request counter before and
+after the run. The counter delta must equal the benchmark's warmup plus measured
+requests. A repeat with additional production requests is contaminated and is
+excluded from the release baseline.
+
+The 4096-grid capacity gate may use one cold four-request run per concurrency
+because a single request can take minutes on gfx906. Cold images must have
+different decoded pixel content, not only different filenames or metadata.
+Cache-reuse grid results are diagnostics and never replace the cold run. Repeat
+the cold grid in a dedicated window when it is used for a performance release
+decision.
+
 ## Measurements
 
 - Success count and HTTP status
