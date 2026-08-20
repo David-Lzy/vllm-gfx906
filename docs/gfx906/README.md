@@ -22,6 +22,7 @@ machine-specific deployment configuration do not belong in this repository.
 
 - [v0.26 roadmap](roadmap-v0.26.md)
 - [v0.27 exploration roadmap](roadmap-v027.md)
+- [v0.27 selected-backport report](phase-16-v027-selected-backports.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
