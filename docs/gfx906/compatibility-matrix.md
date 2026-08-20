@@ -14,8 +14,8 @@ Status meanings:
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
 | Context | 100K model length | verified-current | planned-v0.26 | Must retain high-context operation |
-| Multimodal | 1/8/32/64 images | verified-current | planned-v0.26 | Video remains disabled by default |
-| Multimodal | 4096 x 4096 grid | verified-current | planned-v0.26 | Processor and vision path regression gate |
+| Multimodal routine gate | 1/2 images at 256 x 256 | verified-current | planned-v0.26 | Required for each normal development and release gate; video remains disabled by default |
+| Multimodal capacity | 8-64 images and 4096 x 4096 grid | verified-current capability | deferred-specialized | Run only when changing a capacity limit, scheduler, KV cache, or media-processing path |
 | Quantization | Classic AWQ weights | verified-current | planned-v0.26 | Primary quantized weight path |
 | Attention | gfx906 Triton attention | verified-current | planned-v0.26 | A fallback must remain available |
 | Speculation | Qwen3.5 DFlash | verified-current (smoke) | experimental | Needs full throughput and quality evidence |

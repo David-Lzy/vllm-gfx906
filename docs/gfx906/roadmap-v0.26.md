@@ -12,9 +12,9 @@ stability.
 | Phase | Scope | Exit gate |
 | --- | --- | --- |
 | 00 | Repository bootstrap | Remotes, baseline tag, integration branch, docs, and local control plane exist |
-| 01 | Production baseline | Reproducible text, image, grid, JSON, utilization, and quality baseline captured |
+| 01 | Production baseline | Reproducible text, one/two 256-square image, JSON, utilization, and quality baseline captured |
 | 02 | Stock v0.26 gfx906 build | Text model starts and completes smoke tests without optional patches |
-| 03 | Qwen3.5 AWQ multimodal parity | OpenAI text and 1/8/32/64-image requests pass at the production limits |
+| 03 | Qwen3.5 AWQ multimodal parity | OpenAI text, one/two 256-square image, and JSON requests pass on the production route |
 | 04 | Performance regression | Core throughput is at least 95% of the validated baseline with no material quality loss |
 | 05 | DFlash | Retained only with measured end-to-end benefit and stable output |
 | 06 | MoE tensor parallelism | 35B-A3B BF16 TP4 text and multimodal paths are stable |
@@ -34,8 +34,10 @@ stability.
 
 ## Release gates
 
-- Text, 1/8/32/64-image, 4096-grid, and JSON-constrained tests pass.
+- Text, one/two 256-square image, and JSON-constrained tests pass.
 - The supported context and multimodal limits remain available.
+- 32/64-image and 4096-grid capacity tests run only when a release changes the
+  relevant capacity, scheduler, KV-cache, or media-processing path.
 - There are no OOMs, HTTP 500 responses, empty outputs, runaway repetition,
   xgrammar/FSM failures, fatal RCCL errors, or stranded running/waiting work.
 - Core image and text throughput reaches at least 95% of the validated

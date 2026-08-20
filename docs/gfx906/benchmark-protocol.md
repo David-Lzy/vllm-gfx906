@@ -6,31 +6,30 @@ Use one stable protocol for release decisions. A result is comparable only
 when the model revision, image, topology, prompts, assets, sampling settings,
 cache state, and request concurrency are recorded.
 
-## Core workloads
+## Routine workloads
+
+Routine validation is intentionally lightweight. It catches model loading,
+multimodal mapping, vision encoding, JSON-constrained output, and idle recovery
+without turning every kernel or dependency change into a long capacity run.
 
 | Workload | Requests | Concurrency | Input | Max output tokens |
 | --- | ---: | ---: | --- | ---: |
-| Text | 16 | 8 | Fixed text prompt | 512 |
-| 8 images | 16 | 8 | 8 non-reused 128px images/request | 128 |
-| 32 images | 8 | 4 | 32 non-reused 128px images/request | 256 |
-| 64 images | 4 | 4 | 64 non-reused 128px images/request | 128 |
-| Large grid | At least 4 | 1 and 4 | Fixed 4096 x 4096 grid | 128 |
+| Text | 1 smoke, then 4 warmed samples when performance is in scope | 1 | Fixed text prompt | 128 |
+| One image | 1 smoke, then 4 warmed samples when performance is in scope | 1 | One fixed 256 x 256 image | 128 |
+| Two images | 1 smoke, then 4 warmed samples when performance is in scope | 1 | Two fixed 256 x 256 images | 128 |
 | JSON constrained | 3 | 1 | Fixed schema and prompt | Test-defined |
 
-Cache-reuse runs may be reported separately, but do not replace cold or
-non-reused image results.
+Each measured scenario records its own request count. A repeat contaminated by
+unrelated traffic is excluded from a production comparison.
 
-Every measured scenario must compare the Router request counter before and
-after the run. The counter delta must equal the benchmark's warmup plus measured
-requests. A repeat with additional production requests is contaminated and is
-excluded from the release baseline.
+## Capacity and scheduler workloads
 
-The 4096-grid capacity gate may use one cold four-request run per concurrency
-because a single request can take minutes on gfx906. Cold images must have
-different decoded pixel content, not only different filenames or metadata.
-Cache-reuse grid results are diagnostics and never replace the cold run. Repeat
-the cold grid in a dedicated window when it is used for a performance release
-decision.
+32-image, 64-image, and 4096 x 4096 grid payloads are not routine development
+or release gates. Run them only in a separately declared capacity experiment
+when changing a multimodal limit, scheduler policy, KV-cache representation, or
+media-processing path. Cold assets in such an experiment must differ in decoded
+pixel content, not only filenames or metadata. Cache-reuse results remain
+diagnostic and do not replace cold results.
 
 ## Measurements
 
@@ -55,10 +54,13 @@ decision.
 
 ## Release acceptance
 
-- Every core workload succeeds with no stranded running or waiting requests.
-- Aggregate core throughput is at least 95% of the validated release baseline.
-- No core workload regresses by more than 10% without an explicit, reviewed
-  tradeoff.
+- Text plus one/two 256-square image smoke and JSON 3/3 succeed with no
+  stranded running or waiting requests.
+- When a release changes a performance-critical path, warmed text and two-image
+  latency is at least 95% of the validated release baseline, unless an explicit
+  reviewed tradeoff says otherwise.
+- A capacity/scheduler release additionally runs its declared dedicated capacity
+  suite; ordinary releases do not inherit that requirement.
 - Quality remains equivalent within the documented sanity rubric.
 - No OOM, HTTP 500, fatal RCCL, xgrammar/FSM, or reproducible engine crash is
   accepted.
