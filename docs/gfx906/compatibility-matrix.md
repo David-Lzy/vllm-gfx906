@@ -29,3 +29,18 @@ Status meanings:
 
 Compatibility claims apply only to the exact image, model revision, settings,
 and benchmark evidence recorded for a release.
+
+## v0.27 exploration boundary
+
+Upstream v0.27 is not currently a gfx906 runtime candidate. Its PyTorch 2.13
+and Triton 3.7 dependency path rejects gfx906 in the compiler pipeline before
+the server becomes healthy. The fork therefore treats v0.27 as two separate
+research tracks:
+
+- self-contained upstream backports may be evaluated on the v0.26 gfx906 base;
+- a full v0.27 runtime requires a separately validated Triton 3.7 gfx906 port.
+
+The selected-backport track covers Qwen3.5 9B AWQ multimodal preprocessing and
+Qwen3.8 27B AWQ hybrid/Mamba execution independently. It excludes internal
+data-parallel routing, video-only features, MI300-specific optimizations, and
+startup-only improvements until they have a direct gfx906 use case.

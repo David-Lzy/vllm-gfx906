@@ -21,6 +21,7 @@ machine-specific deployment configuration do not belong in this repository.
 ## Documents
 
 - [v0.26 roadmap](roadmap-v0.26.md)
+- [v0.27 exploration roadmap](roadmap-v027.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
@@ -34,3 +35,8 @@ machine-specific deployment configuration do not belong in this repository.
 3. Prevent performance regressions against the validated production lineage.
 4. Port optional DFlash, MoE, TurboQuant KV, and FP8 KV features separately.
 5. Publish a reproducible image only after hardware validation and canary soak.
+
+The v0.27 work is a separate exploration track. It first evaluates narrowly
+selected upstream backports on the validated v0.26 gfx906 base, then addresses
+the Triton 3.7 gfx906 compiler gap. It does not authorize an automatic runtime
+upgrade or production replacement.
