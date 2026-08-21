@@ -233,11 +233,13 @@ time on a branch that is already outside the non-regression gate.
 Phase 28 succeeds as an isolated performance repair: it exceeds the requested
 ten-percent improvement by a large margin and raises the problematic
 `0.238 tok/s` long-context control to `1.353 tok/s` for Qwen3.8. It does not
-yet authorize a production promotion. The backend remains explicit because
-its cold load/repacking path is materially slower than generic Triton and the
-validation set intentionally excludes production-scale 32/64-image tests.
+yet authorize a production promotion. The backend remains explicit while its
+startup behavior and broader model coverage are validated.
 
-The next production-readiness work is to cache the transformed layout during
-load, broaden model-format coverage, and run an approved canary. Attention,
-RCCL, GDN/Mamba, a new HIP C++ kernel, and further MTP depths are not the
-highest-value next change for this checkpoint on gfx906.
+Phase 29 subsequently measured official AOT, loader, and fixed-KV recovery
+paths. Persistent AOT reuse removes more than half of repeat-start time, while
+local-filesystem prefetch and the multithread loader do not improve end-to-end
+health time. A duplicate transformed-weight cache is therefore deferred. See
+[Phase 29](phase-29-qwen38-startup-recovery.md). Attention, RCCL, GDN/Mamba, a
+new HIP C++ kernel, and further MTP depths are not the highest-value next
+change for this checkpoint on gfx906.

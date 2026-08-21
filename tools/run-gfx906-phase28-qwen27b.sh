@@ -18,6 +18,12 @@ readonly PROFILE_ATTACH="${PROFILE_ATTACH:-0}"
 readonly TORCH_PROFILER="${TORCH_PROFILER:-0}"
 readonly CUSTOM_PROFILE_SCOPES="${CUSTOM_PROFILE_SCOPES:-0}"
 readonly LINEAR_BACKEND="${LINEAR_BACKEND:-auto}"
+readonly SAFETENSORS_LOAD_STRATEGY="${SAFETENSORS_LOAD_STRATEGY:-auto}"
+readonly SAFETENSORS_PREFETCH_NUM_THREADS="${SAFETENSORS_PREFETCH_NUM_THREADS:-8}"
+readonly SAFETENSORS_PREFETCH_BLOCK_SIZE="${SAFETENSORS_PREFETCH_BLOCK_SIZE:-16777216}"
+readonly MODEL_LOADER_EXTRA_CONFIG="${MODEL_LOADER_EXTRA_CONFIG:-}"
+readonly KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-}"
+readonly FORCE_AOT_LOAD="${FORCE_AOT_LOAD:-0}"
 readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phase19-gpu2-256.png}"
 readonly SERVED_MODEL="phase28-${MODEL_LABEL}"
 readonly MODEL_DIR="${ROOT}/models/${MODEL_LABEL}"
@@ -55,6 +61,16 @@ Environment:
                                choose the default linear path or the explicit
                                gfx906 GPTQ-compatible W4A16 experiment
   GPTQ_WNA16_IMAGE=<tag>       tag written by build-gptq-wna16-image
+  SAFETENSORS_LOAD_STRATEGY=auto|lazy|eager|prefetch
+                               choose a documented safetensors loader path
+  SAFETENSORS_PREFETCH_NUM_THREADS=8
+  SAFETENSORS_PREFETCH_BLOCK_SIZE=16777216
+                               prefetch settings when the strategy is prefetch
+  MODEL_LOADER_EXTRA_CONFIG=<JSON object>
+                               for example, enable_multithread_load and threads
+  KV_CACHE_MEMORY_BYTES=<positive integer>
+                               fixed per-GPU KV allocation for restart tests
+  FORCE_AOT_LOAD=1             fail if the persistent AOT cache misses
 
 Only one model cache is allowed at a time. Run cleanup after recording a
 candidate before fetching the next checkpoint. cleanup requires CONFIRM=delete.
@@ -113,6 +129,35 @@ wait_for_server() {
     return 1
 }
 
+record_startup_result() {
+    local elapsed_seconds="$1"
+    local result_dir
+    result_dir="${ROOT}/results/$(date -u +%Y%m%dT%H%M%SZ)-${MODEL_LABEL}-${MODE}-startup"
+    mkdir -p "${result_dir}"
+    docker logs "${CONTAINER}" > "${result_dir}/container.log" 2>&1
+    jq -n \
+        --arg model "${MODEL_ID}" \
+        --arg label "${MODEL_LABEL}" \
+        --arg mode "${MODE}" \
+        --arg image "${IMAGE}" \
+        --arg cache_label "${CACHE_LABEL}" \
+        --arg linear_backend "${LINEAR_BACKEND}" \
+        --arg safetensors_load_strategy "${SAFETENSORS_LOAD_STRATEGY}" \
+        --arg model_loader_extra_config "${MODEL_LOADER_EXTRA_CONFIG}" \
+        --arg kv_cache_memory_bytes "${KV_CACHE_MEMORY_BYTES}" \
+        --arg force_aot_load "${FORCE_AOT_LOAD}" \
+        --argjson health_elapsed_seconds "${elapsed_seconds}" \
+        '{model: $model, label: $label, mode: $mode, image: $image,
+          cache_label: $cache_label, linear_backend: $linear_backend,
+          safetensors_load_strategy: $safetensors_load_strategy,
+          model_loader_extra_config: $model_loader_extra_config,
+          kv_cache_memory_bytes: $kv_cache_memory_bytes,
+          force_aot_load: $force_aot_load,
+          health_elapsed_seconds: $health_elapsed_seconds}' \
+        > "${result_dir}/startup.json"
+    echo "${result_dir}"
+}
+
 speculative_config() {
     case "${MODE}" in
         no-mtp) ;;
@@ -153,6 +198,37 @@ start() {
         echo "LINEAR_BACKEND must be auto or gfx906_gptq." >&2
         exit 2
     fi
+    case "${SAFETENSORS_LOAD_STRATEGY}" in
+        auto|lazy|eager|prefetch) ;;
+        *) echo "Unsupported SAFETENSORS_LOAD_STRATEGY: ${SAFETENSORS_LOAD_STRATEGY}" >&2; exit 2 ;;
+    esac
+    if ! [[ "${SAFETENSORS_PREFETCH_NUM_THREADS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "SAFETENSORS_PREFETCH_NUM_THREADS must be a positive integer." >&2
+        exit 2
+    fi
+    if ! [[ "${SAFETENSORS_PREFETCH_BLOCK_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "SAFETENSORS_PREFETCH_BLOCK_SIZE must be a positive integer." >&2
+        exit 2
+    fi
+    if [[ -n "${KV_CACHE_MEMORY_BYTES}" && ! "${KV_CACHE_MEMORY_BYTES}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "KV_CACHE_MEMORY_BYTES must be empty or a positive integer." >&2
+        exit 2
+    fi
+    if [[ "${FORCE_AOT_LOAD}" != "0" && "${FORCE_AOT_LOAD}" != "1" ]]; then
+        echo "FORCE_AOT_LOAD must be 0 or 1." >&2
+        exit 2
+    fi
+    if [[ -n "${MODEL_LOADER_EXTRA_CONFIG}" ]]; then
+        if [[ "${MODEL_LOADER_EXTRA_CONFIG}" == *"'"* ]] || \
+            ! jq -e 'type == "object"' >/dev/null <<< "${MODEL_LOADER_EXTRA_CONFIG}"; then
+            echo "MODEL_LOADER_EXTRA_CONFIG must be a JSON object without apostrophes." >&2
+            exit 2
+        fi
+        if [[ "${SAFETENSORS_LOAD_STRATEGY}" != "auto" ]]; then
+            echo "MODEL_LOADER_EXTRA_CONFIG cannot be combined with a safetensors strategy." >&2
+            exit 2
+        fi
+    fi
     if [[ ! -f "${MODEL_DIR}/config.json" ]]; then
         echo "Missing model at ${MODEL_DIR}; run fetch first." >&2
         exit 1
@@ -165,9 +241,25 @@ start() {
     mkdir -p "${CACHE_DIR}/triton-cache" "${LOG_DIR}"
     docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
 
-    local extra_command profiler_command
+    local extra_command loader_command profiler_command kv_cache_command
+    local start_nanoseconds end_nanoseconds elapsed_seconds
     local -a profile_security_args=()
     extra_command="$(speculative_config)"
+    loader_command=""
+    if [[ "${SAFETENSORS_LOAD_STRATEGY}" != "auto" ]]; then
+        loader_command=" --safetensors-load-strategy ${SAFETENSORS_LOAD_STRATEGY}"
+        if [[ "${SAFETENSORS_LOAD_STRATEGY}" == "prefetch" ]]; then
+            loader_command+=" --safetensors-prefetch-num-threads ${SAFETENSORS_PREFETCH_NUM_THREADS}"
+            loader_command+=" --safetensors-prefetch-block-size ${SAFETENSORS_PREFETCH_BLOCK_SIZE}"
+        fi
+    fi
+    if [[ -n "${MODEL_LOADER_EXTRA_CONFIG}" ]]; then
+        loader_command=" --model-loader-extra-config '${MODEL_LOADER_EXTRA_CONFIG}'"
+    fi
+    kv_cache_command=""
+    if [[ -n "${KV_CACHE_MEMORY_BYTES}" ]]; then
+        kv_cache_command=" --kv-cache-memory-bytes ${KV_CACHE_MEMORY_BYTES}"
+    fi
     profiler_command=""
     if [[ "${TORCH_PROFILER}" == "1" ]]; then
         mkdir -p "${CACHE_DIR}/torch-profiler"
@@ -176,6 +268,7 @@ start() {
     if [[ "${PROFILE_ATTACH}" == "1" ]]; then
         profile_security_args=(--cap-add SYS_PTRACE --security-opt seccomp=unconfined)
     fi
+    start_nanoseconds="$(date +%s%N)"
     docker run -d --name "${CONTAINER}" --network host \
         --device /dev/kfd --device /dev/dri --group-add video --ipc host --shm-size 64g \
         "${profile_security_args[@]}" \
@@ -193,6 +286,7 @@ start() {
         -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
         -e VLLM_ROCM_ENABLE_GFX906_SPLITKV="${SPLITKV_GFX906}" \
         -e VLLM_CUSTOM_SCOPES_FOR_PROFILING="${CUSTOM_PROFILE_SCOPES}" \
+        -e VLLM_FORCE_AOT_LOAD="${FORCE_AOT_LOAD}" \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
         -e HF_HUB_OFFLINE=1 \
         -e TRANSFORMERS_OFFLINE=1 \
@@ -216,9 +310,13 @@ start() {
           --enable-prefix-caching --enable-chunked-prefill --mamba-cache-mode align \\
           --skip-mm-profiling --reasoning-parser qwen3 \\
           --default-chat-template-kwargs '{\"enable_thinking\":false}' \\
-          --linear-backend ${LINEAR_BACKEND}${extra_command}${profiler_command}" \
+          --linear-backend ${LINEAR_BACKEND}${loader_command}${kv_cache_command}${extra_command}${profiler_command}" \
         > "${LOG_DIR}/container-id.txt"
     wait_for_server
+    end_nanoseconds="$(date +%s%N)"
+    elapsed_seconds="$(awk -v start="${start_nanoseconds}" -v end="${end_nanoseconds}" \
+        'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+    record_startup_result "${elapsed_seconds}"
 }
 
 fetch() {
