@@ -19,8 +19,8 @@ if (( free_gib < MIN_FREE_GIB )); then
     exit 1
 fi
 
-if [[ -e "${MODEL_DIR}/config.json" ]]; then
-    echo "Model directory already populated: ${MODEL_DIR}" >&2
+if compgen -G "${MODEL_DIR}/model-*.safetensors" >/dev/null; then
+    echo "Model weights already populated: ${MODEL_DIR}" >&2
     exit 1
 fi
 
