@@ -13,6 +13,7 @@ Status meanings:
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
 | Secondary model | Qwen3.8 27B AWQ 4-bit | unverified | experimental | Isolated TP2 Qwen3.8 plus MTP1 passed routine text, image, and JSON checks; not a production candidate |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
+| Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
 | Context | 100K model length | verified-current | planned-v0.26 | Must retain high-context operation |
 | Multimodal routine gate | 1/2 images at 256 x 256 | verified-current | planned-v0.26 | Required for each normal development and release gate; video remains disabled by default |
