@@ -1,0 +1,29 @@
+From f797708c0626e5f9840ca5b0a98790e2c7cb09ad Mon Sep 17 00:00:00 2001
+From: David Lzy <davidli@localhost>
+Date: Fri, 21 Aug 2026 00:00:00 +0000
+Subject: [PATCH] amd: use gfx9 DPP broadcast for Vega20 reductions
+
+The established gfx906 Triton 3.6 path treats Vega20 as a DPP-capable
+CDNA-style target. Triton 3.7 introduced a narrower feature helper but omitted
+the newly registered family, which sent full-wave reductions through the RDNA
+permlanex16 lowering. gfx906 cannot select that intrinsic. Keep the validated
+DPP broadcast path for Vega20.
+
+---
+ third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+index a906fa9..2456707 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+@@ -744,6 +744,7 @@ void TargetInfo::localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
+ 
+ bool TargetInfo::supportDppBroadcast() const {
+   switch (getISAFamily()) {
++  case ISAFamily::VEGA20:
+   case ISAFamily::CDNA1:
+   case ISAFamily::CDNA2:
+   case ISAFamily::CDNA3:
+-- 
+2.47.0

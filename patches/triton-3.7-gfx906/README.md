@@ -8,7 +8,8 @@ tree. Build products, source checkouts, and compiler caches are local-only.
 
 ```bash
 git -C <triton-3.7.1-source> apply \
-  <this-repository>/patches/triton-3.7-gfx906/0001-amd-register-vega20-gfx906.patch
+  <this-repository>/patches/triton-3.7-gfx906/0001-amd-register-vega20-gfx906.patch \
+  <this-repository>/patches/triton-3.7-gfx906/0002-amd-enable-vega20-dpp-broadcast.patch
 ```
 
 ## Patch intent
@@ -25,3 +26,7 @@ It does not pretend that Vega20 supports CDNA3/4 instructions, tensor-memory
 operations, async-copy specializations, FP8 instructions, or multi-CTA
 launches. Each further compiler error must become a separate patch with its
 own numerical evidence.
+
+`0002` retains the gfx9 DPP broadcast reduction path already used by the
+validated Triton 3.6 fork. Without it, the newer feature helper directs Vega20
+through an RDNA-only `permlanex16` intrinsic that gfx906 cannot select.
