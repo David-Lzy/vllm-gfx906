@@ -62,14 +62,18 @@ docker run -d --name "${CONTAINER}" --network host \
       --mm-shm-cache-max-object-size-mb 512 --mm-tensor-ipc torch_shm \\
       --renderer-num-workers 1 --enable-prefix-caching --enable-chunked-prefill \\
       --mamba-cache-mode align --skip-mm-profiling \\
-      --reasoning-parser qwen3 --default-chat-template-kwargs '{\"enable_thinking\":false}' \\
-      --disable-log-requests${extra_command}" \
+      --reasoning-parser qwen3 --default-chat-template-kwargs '{\"enable_thinking\":false}'${extra_command}" \
     > "${LOG_DIR}/${MODE}-container-id.txt"
 
 for _ in $(seq 1 180); do
     if curl --fail --silent --max-time 10 "http://127.0.0.1:${PORT}/health" >/dev/null; then
         echo "${CONTAINER} is healthy on port ${PORT}."
         exit 0
+    fi
+    if [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}")" != "true" ]]; then
+        docker logs --tail 300 "${CONTAINER}" >&2 || true
+        echo "${CONTAINER} exited before becoming healthy." >&2
+        exit 1
     fi
     sleep 10
 done
