@@ -1,0 +1,6 @@
+# Phase 21 is a Python-only decoder-tail experiment layered on the validated
+# Phase 20 runtime. Native extensions, ROCm, PyTorch, and Triton stay pinned.
+FROM local/vllm-gfx906:v0.27.1-phase20-exllama-policy
+
+COPY vllm/model_executor/layers/utils.py \
+    /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/utils.py

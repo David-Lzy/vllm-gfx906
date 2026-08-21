@@ -122,7 +122,13 @@ def use_aiter_triton_gemm(n, m, k, dtype):
 def rocm_unquantized_gemm_impl(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
-    from vllm.platforms.rocm import on_gfx1x, on_gfx9, on_gfx950, on_gfx1250
+    from vllm.platforms.rocm import (
+        on_gfx1x,
+        on_gfx9,
+        on_gfx906,
+        on_gfx950,
+        on_gfx1250,
+    )
 
     n = x.numel() // x.size(-1)
     m = weight.shape[0]
@@ -175,7 +181,7 @@ def rocm_unquantized_gemm_impl(
 
     use_skinny = (
         envs.VLLM_ROCM_USE_SKINNY_GEMM
-        and (on_gfx9() or on_gfx1x())
+        and (on_gfx9() or on_gfx1x() or on_gfx906())
         # build (gfx9/gfx11 ISA); fall back to torch GEMM there.
         # TODO GFX1250: Include once skinny GEMM is supported on gfx1250
         and x.dtype in [torch.float16, torch.bfloat16]
@@ -184,12 +190,12 @@ def rocm_unquantized_gemm_impl(
 
     if use_skinny:
         x_view = x.reshape(-1, x.size(-1))
-        if m > 8 and 0 < n <= 5:
+        if on_gfx906() and m % 4 == 0 and n == 1 and k <= 8192 and bias is None:
+            out = ops.LLMM1(weight, x_view, 4)
+            return out.reshape(*x.shape[:-1], weight.shape[0])
+        if m > 8 and 0 < n <= 5 and (on_gfx9() or on_gfx1x()):
             cu_count = num_compute_units()
             out = ops.wvSplitK(weight, x_view, cu_count, bias)
-            return out.reshape(*x.shape[:-1], weight.shape[0])
-        elif m % 4 == 0 and n == 1 and k <= 8192 and bias is None:
-            out = ops.LLMM1(weight, x_view, 4)
             return out.reshape(*x.shape[:-1], weight.shape[0])
 
     if rocm_aiter_ops.is_tgemm_enabled():
