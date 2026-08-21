@@ -17,6 +17,9 @@ phase_root="${PHASE_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23}"
 baseline_summary_file="${BASELINE_SUMMARY_FILE:-}"
 baseline_label="${BASELINE_LABEL:-v0.23}"
 candidate_label="${CANDIDATE_LABEL:-v0.27}"
+candidate_runner_label="${CANDIDATE_RUNNER_LABEL:-candidate_v027}"
+baseline_linear_backend="${BASELINE_LINEAR_BACKEND:-}"
+candidate_linear_backend="${CANDIDATE_LINEAR_BACKEND:-}"
 attention_config="${ATTENTION_CONFIG:-}"
 compilation_config="${COMPILATION_CONFIG:-}"
 aot_compile="${VLLM_USE_AOT_COMPILE:-}"
@@ -54,6 +57,9 @@ jq -n \
   --arg model "$model" \
   --arg baseline_label "$baseline_label" \
   --arg candidate_label "$candidate_label" \
+  --arg candidate_runner_label "$candidate_runner_label" \
+  --arg baseline_linear_backend "$baseline_linear_backend" \
+  --arg candidate_linear_backend "$candidate_linear_backend" \
   --arg attention_config "$attention_config" \
   --arg compilation_config "$compilation_config" \
   --arg aot_compile "$aot_compile" \
@@ -66,6 +72,9 @@ jq -n \
   --argjson max_num_batched_tokens "$max_num_batched_tokens" \
   '{baseline_image: $baseline_image, candidate_image: $candidate_image,
     model: $model, baseline_label: $baseline_label, candidate_label: $candidate_label,
+    candidate_runner_label: $candidate_runner_label,
+    baseline_linear_backend: $baseline_linear_backend,
+    candidate_linear_backend: $candidate_linear_backend,
     attention_config: $attention_config,
     compilation_config: $compilation_config, aot_compile: $aot_compile,
     mega_aot_artifact: $mega_aot_artifact,
@@ -85,6 +94,7 @@ trap cleanup EXIT
 run_candidate() {
   local label="$1"
   local image="$2"
+  local linear_backend="$3"
   local candidate_dir="$result_dir/$label"
   local cache_dir="$phase_root/cache/$run_id/$label"
   local triton_cache_dir="$cache_dir/triton-cache"
@@ -94,6 +104,17 @@ run_candidate() {
   local -a compilation_args=()
   local -a aot_compile_env=()
   local -a mega_aot_artifact_env=()
+  local -a linear_args=()
+
+  if [[ -n "$linear_backend" ]]; then
+    case "$linear_backend" in
+      auto|gfx906_gptq) linear_args=(--linear-backend "$linear_backend") ;;
+      *)
+        printf 'Unsupported linear backend for %s: %s\n' "$label" "$linear_backend" >&2
+        exit 2
+        ;;
+    esac
+  fi
 
   if [[ -n "$attention_config" ]]; then
     attention_args=(--attention-config "$attention_config")
@@ -157,7 +178,7 @@ run_candidate() {
     -lc 'mkdir -p /root/.cache/vllm/torch_compile_cache /root/.cache/vllm/torch_compile_cache/torchinductor /root/.triton/cache; exec nice -n "${PROCESS_NICE:-0}" vllm "$@"' \
     vllm-wrapper \
     serve "$model" --host 0.0.0.0 --port 8000 --served-model-name "$model" --trust-remote-code \
-    --dtype float16 --kv-cache-dtype float16 --tensor-parallel-size 1 \
+    --dtype float16 --kv-cache-dtype float16 --tensor-parallel-size 1 "${linear_args[@]}" \
     --max-model-len "$max_model_len" --gpu-memory-utilization "$gpu_memory_utilization" \
     --max-num-seqs "$max_num_seqs" --max-num-batched-tokens "$max_num_batched_tokens" \
     --renderer-num-workers 1 --enable-prefix-caching --reasoning-parser qwen3 \
@@ -208,14 +229,14 @@ if [[ -n "$baseline_summary_file" ]]; then
   cp "$baseline_summary_file" "$result_dir/baseline-summary-reused.json"
   baseline_summary_file="$result_dir/baseline-summary-reused.json"
 else
-  run_candidate baseline_v023 "$baseline_image"
+  run_candidate baseline_v023 "$baseline_image" "$baseline_linear_backend"
   baseline_summary_file="$result_dir/baseline_v023/benchmark/summary.json"
 fi
-run_candidate candidate_v027_phase21 "$candidate_image"
+run_candidate "$candidate_runner_label" "$candidate_image" "$candidate_linear_backend"
 
 jq -n \
   --slurpfile baseline "$baseline_summary_file" \
-  --slurpfile candidate "$result_dir/candidate_v027_phase21/benchmark/summary.json" '
+  --slurpfile candidate "$result_dir/$candidate_runner_label/benchmark/summary.json" '
   def by_scenario($items): reduce $items[] as $item ({}; .[$item.scenario] = $item);
   (by_scenario($baseline[0])) as $old |
   (by_scenario($candidate[0])) as $new |
