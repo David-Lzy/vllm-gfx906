@@ -68,7 +68,8 @@ docker run -d --name "${CONTAINER}" --network host \
       --limit-mm-per-prompt '{\"image\":64,\"video\":0}' \\
       --mm-processor-kwargs '{\"max_pixels\":16777216}' \\
       --mm-processor-cache-type shm --mm-processor-cache-gb 16 \\
-      --mm-shm-cache-max-object-size-mb 512 --mm-tensor-ipc torch_shm \\
+      --mm-shm-cache-max-object-size-mb 512 --mm-tensor-ipc direct_rpc \\
+      --mm-encoder-tp-mode data \\
       --renderer-num-workers 1 --enable-prefix-caching --enable-chunked-prefill \\
       --mamba-cache-mode align --skip-mm-profiling \\
       --reasoning-parser qwen3 --default-chat-template-kwargs '{\"enable_thinking\":false}'${extra_command}" \
