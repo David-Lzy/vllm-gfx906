@@ -86,6 +86,23 @@ repository. The control order is Qwen3.6 first, then explicit cleanup, then
 Qwen3.8. Each model is measured in no-MTP mode first, followed by MTP depths
 one, two, and four only while the previous mode stays correct and non-regressive.
 
+## Community-first Split-KV Candidate
+
+Before considering a new HIP C++ attention operator, evaluate the open upstream
+[PR #45916](https://github.com/vllm-project/vllm/pull/45916). It adds a Triton
+split-KV decode and reduction path for FP16/BF16, 256-wide heads and nonstandard
+physical blocks. That is an architectural match for this model family: the
+local Qwen3.6 control config has 24 query heads, 4 KV heads, 256-wide heads,
+and the runtime has already selected physical blocks of 784 tokens.
+
+The PR is not claimed compatible with MI50: its upstream gate is `on_gfx1x()`,
+whereas MI50 is `gfx906`. After the control result, a disposable gfx906-only
+candidate must first pass the PR's kernel-equivalence test adapted to FP16,
+24/4 heads, and block 784. Only then may it run the routine service gate and a
+context-length slope comparison. Reject it on Triton compilation failure,
+numerical mismatch, or a short-decode regression. This is an opt-in reuse
+experiment, not a platform-wide gate widening.
+
 ## Decision Gate
 
 - Consider a HIP C++ paged-attention implementation only when full paged
