@@ -115,6 +115,26 @@ reuse decode. This separates one-time prefill from the decode context slope that
 split-KV is intended to change; fixed 128-token results remain the short-context
 control rather than evidence for or against the long-context candidate.
 
+## Upstream Attribution And MI50 Scope
+
+[vLLM issue #50264](https://github.com/vllm-project/vllm/issues/50264) now
+provides the closest published attribution for this exact Qwen hybrid geometry.
+At 32K context, its profile found the Gated DeltaNet decode and W4A16 GEMMs
+flat while the 16 full-attention layers' `kernel_paged_attention_2d` grew
+28.3x. Its upstream split-KV experiment reduced that kernel from about 10.1 ms
+to 0.64 ms per call and improved the 32K decode result 2.52x on gfx1100. The
+published result is not an MI50 claim, but it makes the opt-in gfx906 trial the
+first implementation step with the strongest evidence.
+
+The native ROCm HIP paged-attention operator cannot be selected by merely
+widening an eligibility check: it has no head-dimension-256 or 784-token block
+instantiation. A new HIP C++ operator remains the fallback only if the
+split-KV experiment fails its gfx906 correctness or performance gate. Likewise,
+the Qwen3.8 announcement's AITER acceleration targets newer AMD Instinct
+paths; the current ROCm platform code enables the relevant AITER hipBLASLt
+online tuning only on CDNA generations later than two. MI50/gfx906 must not
+treat AITER as a substitute for this attention-path repair.
+
 ## Initial Qwen3.6 Control
 
 The same-runtime Qwen3.6 27B AWQ no-MTP control completed its five fixed
