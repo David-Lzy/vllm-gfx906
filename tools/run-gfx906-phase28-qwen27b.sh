@@ -301,12 +301,13 @@ bench() {
 post_slope_case() {
     local result_dir="$1"
     local name="$2"
-    local payload="$3"
+    local payload_file="$3"
     local output="${result_dir}/${name}.json"
     local started ended elapsed code
     started="$(date +%s.%N)"
     code="$(curl --silent --show-error --output "${output}" --write-out '%{http_code}' \
-        --max-time 1800 -H 'content-type: application/json' --data "${payload}" \
+        --max-time 1800 -H 'content-type: application/json' \
+        --data-binary "@${payload_file}" \
         "http://127.0.0.1:${PORT}/v1/chat/completions")"
     ended="$(date +%s.%N)"
     elapsed="$(awk -v start="${started}" -v end="${ended}" \
@@ -337,19 +338,24 @@ slope() {
         exit 2
     fi
 
-    local result_dir prompt prime_payload decode_payload decode_tokens decode_elapsed
+    local result_dir context_file prime_payload_file decode_payload_file
+    local decode_tokens decode_elapsed
     result_dir="${ROOT}/results/$(date -u +%Y%m%dT%H%M%SZ)-${MODEL_LABEL}-${MODE}-longctx"
     mkdir -p "${result_dir}"
-    prompt="$(awk -v count="${context_words}" 'BEGIN { for (i = 0; i < count; i++) printf " context" }')"
+    context_file="${result_dir}/context.txt"
+    awk -v count="${context_words}" \
+        'BEGIN { for (i = 0; i < count; i++) printf " context" }' > "${context_file}"
 
-    prime_payload="$(jq -nc --arg model "${SERVED_MODEL}" --arg prompt "${prompt}" \
+    prime_payload_file="${result_dir}/prime.request.json"
+    jq -n --arg model "${SERVED_MODEL}" --rawfile prompt "${context_file}" \
         '{model: $model, temperature: 0, min_tokens: 1, max_tokens: 1,
-          messages: [{role: "user", content: $prompt}]}')"
-    decode_payload="$(jq -nc --arg model "${SERVED_MODEL}" --arg prompt "${prompt}" \
+          messages: [{role: "user", content: $prompt}]}' > "${prime_payload_file}"
+    decode_payload_file="${result_dir}/cached_decode.request.json"
+    jq -n --arg model "${SERVED_MODEL}" --rawfile prompt "${context_file}" \
         '{model: $model, temperature: 0, min_tokens: 8, max_tokens: 8,
-          messages: [{role: "user", content: $prompt}]}')"
-    post_slope_case "${result_dir}" prime "${prime_payload}"
-    post_slope_case "${result_dir}" cached_decode "${decode_payload}"
+          messages: [{role: "user", content: $prompt}]}' > "${decode_payload_file}"
+    post_slope_case "${result_dir}" prime "${prime_payload_file}"
+    post_slope_case "${result_dir}" cached_decode "${decode_payload_file}"
 
     decode_tokens="$(jq -er '.usage.completion_tokens' "${result_dir}/cached_decode.meta.json")"
     decode_elapsed="$(jq -er '.elapsed_seconds' "${result_dir}/cached_decode.meta.json")"
