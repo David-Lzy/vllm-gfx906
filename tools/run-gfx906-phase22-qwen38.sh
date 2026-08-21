@@ -61,7 +61,7 @@ docker run -d --name "${CONTAINER}" --network host \
     --entrypoint /bin/bash "${IMAGE}" -lc \
     "exec /opt/vllm-venv/bin/vllm serve /model \\
       --host 127.0.0.1 --port ${PORT} --served-model-name ${SERVED_MODEL} \\
-      --tensor-parallel-size 2 --dtype float16 --quantization awq \\
+      --tensor-parallel-size 2 --dtype float16 \\
       --trust-remote-code \\
       --max-model-len 100000 --gpu-memory-utilization 0.88 \\
       --max-num-seqs 2 --max-num-batched-tokens 8192 \\
