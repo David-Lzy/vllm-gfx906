@@ -115,6 +115,23 @@ reuse decode. This separates one-time prefill from the decode context slope that
 split-KV is intended to change; fixed 128-token results remain the short-context
 control rather than evidence for or against the long-context candidate.
 
+## Initial Qwen3.6 Control
+
+The same-runtime Qwen3.6 27B AWQ no-MTP control completed its five fixed
+128-token samples at a median `0.441037 tok/s`. At 32,780 prompt tokens, the
+first prefill completed after its one-time large-shape JIT in 618.65 seconds.
+The immediately repeated prefix-cache request reported a 49% hit rate, but its
+eight-token decode still required 33.57 seconds (`0.2383 tok/s`). This 46%
+short-to-long decode decline is direct local evidence for the attention-context
+slope before testing the gfx906 split-KV candidate.
+
+The first long-prefix attempt used the upstream default 300-second executor
+timeout and died in the multiprocess `sample_tokens` RPC while the large-shape
+Triton kernel compiled. The runner now explicitly uses an 1,800-second timeout
+for this isolated long-context probe. This avoids treating a first-JIT timeout
+as a model or kernel-equivalence result; it is not a production configuration
+change.
+
 ## Decision Gate
 
 - Consider a HIP C++ paged-attention implementation only when full paged

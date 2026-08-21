@@ -368,7 +368,7 @@ slope() {
 
     decode_tokens="$(jq -er '.usage.completion_tokens' "${result_dir}/cached_decode.meta.json")"
     decode_elapsed="$(jq -er '.elapsed_seconds' "${result_dir}/cached_decode.meta.json")"
-    jq --argjson context_words "${context_words}" \
+    jq -n --argjson context_words "${context_words}" \
         --argjson completion_tokens "${decode_tokens}" \
         --argjson elapsed_seconds "${decode_elapsed}" \
         '{context_words: $context_words, completion_tokens: $completion_tokens,
