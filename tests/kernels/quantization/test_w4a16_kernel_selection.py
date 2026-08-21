@@ -17,9 +17,9 @@ from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
 
 if current_platform.is_rocm():
-    from vllm.platforms.rocm import on_gfx1x, on_gfx1100
+    from vllm.platforms.rocm import on_gfx1x, on_gfx1100, on_gfx906
 else:
-    on_gfx1100 = on_gfx1x = lambda: False  # noqa: E731
+    on_gfx1100 = on_gfx1x = on_gfx906 = lambda: False  # noqa: E731
 
 # Group sizes the HIP skinny path of RDNAHybridW4A16LinearKernel instantiates.
 _HYBRID_GROUP_SIZES = (32, 64, 128)
@@ -70,3 +70,21 @@ def test_choose_mp_linear_kernel_uint4_asymmetric():
 
     kernel_type = choose_mp_linear_kernel(config)
     assert kernel_type.__name__ == _expected_rocm_kernel(scalar_types.uint4, 64)
+
+
+@pytest.mark.skipif(
+    not (current_platform.is_rocm() and on_gfx906()),
+    reason="gfx906 ROCm only",
+)
+def test_gfx906_opt_in_prefers_exllama(monkeypatch):
+    config = MPLinearLayerConfig(
+        full_weight_shape=(1024, 256),
+        partition_weight_shape=(1024, 256),
+        weight_type=scalar_types.uint4b8,
+        act_type=torch.float16,
+        group_size=32,
+        zero_points=False,
+        has_g_idx=False,
+    )
+    monkeypatch.setattr("vllm.envs.VLLM_ROCM_GFX906_PREFER_EXLLAMA", True)
+    assert choose_mp_linear_kernel(config).__name__ == "ExllamaLinearKernel"

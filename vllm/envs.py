@@ -121,6 +121,7 @@ if TYPE_CHECKING:
     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
+    VLLM_ROCM_GFX906_PREFER_EXLLAMA: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1165,6 +1166,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
         []
         if "VLLM_DISABLED_KERNELS" not in os.environ
         else os.environ["VLLM_DISABLED_KERNELS"].split(",")
+    ),
+    # Prefer the established ExLlama W4A16 kernel for compatible models on
+    # legacy gfx906. This is opt-in because the generic Triton kernel remains
+    # the only implementation for some W4A16 formats.
+    "VLLM_ROCM_GFX906_PREFER_EXLLAMA": lambda: (
+        os.getenv("VLLM_ROCM_GFX906_PREFER_EXLLAMA", "0").strip().lower()
+        in ("1", "true")
     ),
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(
         int(os.getenv("VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE", "1"))

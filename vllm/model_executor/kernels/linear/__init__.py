@@ -757,6 +757,33 @@ def choose_mp_linear_kernel(
             )
         platform_kernels = filtered
 
+    # The generic ROCm Triton W4A16 kernel is tuned for MI300-class devices.
+    # On gfx906, compatible compressed-tensors Qwen checkpoints recover their
+    # established ExLlama path only when an operator deliberately opts in.
+    # Keep the generic kernel in the candidate list for formats ExLlama cannot
+    # implement and for explicit --linear-backend requests.
+    if (
+        linear_backend == "auto"
+        and current_platform.is_rocm()
+        and envs.VLLM_ROCM_GFX906_PREFER_EXLLAMA
+    ):
+        from vllm.platforms.rocm import on_gfx906
+
+        exllama_eligible, _ = ExllamaLinearKernel.can_implement(config)
+        if on_gfx906() and exllama_eligible:
+            platform_kernels = [
+                ExllamaLinearKernel,
+                *(
+                    kernel
+                    for kernel in platform_kernels
+                    if kernel is not ExllamaLinearKernel
+                ),
+            ]
+            logger.info_once(
+                "gfx906 W4A16 policy prefers ExllamaLinearKernel over the "
+                "generic Triton path."
+            )
+
     failure_reasons = []
     for kernel in platform_kernels:
         if kernel.__name__ in envs.VLLM_DISABLED_KERNELS:

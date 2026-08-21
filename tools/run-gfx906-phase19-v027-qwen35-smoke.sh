@@ -20,11 +20,24 @@ container_name="vllm-gfx906-phase19-qwen35-${run_id,,}"
 container_name="${container_name//[^a-z0-9_.-]/-}"
 vllm_cache_dir="${VLLM_CACHE_DIR:-/mnt/disk2/vllm-gfx906-build/phase-19/cache/${run_id}}"
 triton_cache_dir="${TRITON_CACHE_DIR:-${vllm_cache_dir}/triton-cache}"
+disabled_kernels="${VLLM_DISABLED_KERNELS:-}"
+prefer_exllama="${VLLM_ROCM_GFX906_PREFER_EXLLAMA:-0}"
+keep_container="${KEEP_CONTAINER:-0}"
+docker_env_args=()
+
+if [[ -n "$disabled_kernels" ]]; then
+  docker_env_args+=(--env "VLLM_DISABLED_KERNELS=$disabled_kernels")
+fi
+if [[ "$prefer_exllama" != "0" ]]; then
+  docker_env_args+=(--env "VLLM_ROCM_GFX906_PREFER_EXLLAMA=$prefer_exllama")
+fi
 
 mkdir -p "$result_dir" "$vllm_cache_dir" "$triton_cache_dir"
 
 cleanup() {
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  if [[ "$keep_container" != "1" ]]; then
+    docker rm -f "$container_name" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -75,6 +88,7 @@ cat >"$result_dir/metadata.json" <<EOF
   "gpu_memory_utilization": ${gpu_memory_utilization},
   "max_num_seqs": ${max_num_seqs},
   "max_num_batched_tokens": ${max_num_batched_tokens},
+  "prefer_exllama": "${prefer_exllama}",
   "test_image": "${test_image}",
   "test_image_mime_type": "${mime_type}"
 }
@@ -107,6 +121,7 @@ docker run --detach --rm \
   --env NUMEXPR_NUM_THREADS=12 \
   --env TOKENIZERS_PARALLELISM=false \
   --env TORCH_NCCL_ASYNC_ERROR_HANDLING=3 \
+  "${docker_env_args[@]}" \
   --env HF_HUB_OFFLINE=1 \
   --env TRANSFORMERS_OFFLINE=1 \
   --env TRITON_CACHE_DIR=/root/.triton/cache \
@@ -204,3 +219,6 @@ if rg -n -i 'out of memory|xgrammar|failed to advance fsm|rccl.*fatal|nccl.*fata
 fi
 
 printf 'PASS: text, 1/2 image, and JSON 3/3 succeeded. Results: %s\n' "$result_dir"
+if [[ "$keep_container" == "1" ]]; then
+  printf 'Container retained for follow-up benchmarks: %s\n' "$container_name"
+fi
