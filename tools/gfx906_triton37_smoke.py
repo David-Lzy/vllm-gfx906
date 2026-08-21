@@ -53,12 +53,14 @@ def main() -> None:
     x = torch.randn(vector_size, device=device, dtype=torch.float32)
     y = torch.randn_like(x)
     vector_out = torch.empty_like(x)
+    print("elementwise=running", flush=True)
     vector_add_kernel[(1,)](x, y, vector_out, vector_size, block=256)
     assert_close(vector_out, x + y, "elementwise")
 
     rows, width = 4, 256
     reduction_input = torch.randn(rows, width, device=device, dtype=torch.float32)
     reduction_out = torch.empty(rows, device=device, dtype=torch.float32)
+    print("reduction=running", flush=True)
     row_sum_kernel[(rows,)](reduction_input, reduction_out, width, block=256)
     assert_close(reduction_out, reduction_input.sum(dim=1), "reduction")
 
@@ -66,6 +68,7 @@ def main() -> None:
     left = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
     right = torch.randn_like(left)
     product = torch.empty_like(left)
+    print("layout-matmul=running", flush=True)
     matmul_kernel[(1,)](left, right, product, matrix_size, block=64, num_warps=4)
     assert_close(product.float(), (left @ right).float(), "layout-matmul")
 

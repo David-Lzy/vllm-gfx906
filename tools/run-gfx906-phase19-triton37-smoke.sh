@@ -22,6 +22,7 @@ docker run --rm \
   --env TRITON_BUILD_WITH_CLANG_LLD=true \
   --env MAX_JOBS=8 \
   --env TRITON_HOME=/artifacts/triton-home \
+  --env TRITON_DUMP_DIR=/artifacts/triton-dumps \
   --env CCACHE_DIR=/artifacts/ccache \
   --volume "$source_dir:/workspace/triton" \
   --volume "$artifact_root:/artifacts" \
