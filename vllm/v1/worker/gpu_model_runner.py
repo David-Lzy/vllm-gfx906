@@ -255,6 +255,25 @@ AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 PerLayerAttnMetadata: TypeAlias = list[AttnMetadataDict] | AttnMetadataDict
 
 
+def _is_gfx906() -> bool:
+    """Avoid importing ROCm-specific architecture probing on non-ROCm hosts."""
+    if not current_platform.is_rocm():
+        return False
+    from vllm.platforms.rocm import on_gfx906
+
+    return on_gfx906()
+
+
+def _make_async_scheduling_event() -> torch.Event:
+    """Create a low-latency event only for an opted-in gfx906 TP1 worker."""
+    spin_wait = (
+        envs.VLLM_GFX906_TP1_SPIN_EVENTS
+        and _is_gfx906()
+        and get_tp_group().world_size == 1
+    )
+    return torch.cuda.Event(blocking=not spin_wait)
+
+
 # Wrapper for ModelRunnerOutput to support overlapped execution.
 class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
     def __init__(
@@ -272,8 +291,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         self._invalid_req_indices = invalid_req_indices
 
         # Event on the copy stream so we can synchronize the non-blocking copy.
-        # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
-        self.async_copy_ready_event = torch.cuda.Event(blocking=True)
+        self.async_copy_ready_event = _make_async_scheduling_event()
 
         # Keep a reference to the device tensor to avoid it being
         # deallocated until we finish copying it to the host.
@@ -406,8 +424,7 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
         self._model_runner_output = model_runner_output
 
         # Event on the copy stream so we can synchronize the non-blocking copy.
-        # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
-        self.async_copy_ready_event = torch.cuda.Event(blocking=True)
+        self.async_copy_ready_event = _make_async_scheduling_event()
 
         # Keep a reference to the device tensors to avoid them being
         # deallocated until we finish copying it to the host.
@@ -738,9 +755,7 @@ class GPUModelRunner(
         self.prepare_inputs_event: torch.Event | None = None
         if self.use_async_scheduling:
             self.async_output_copy_stream = torch.cuda.Stream()
-            # Blocking (sleep) event to avoid busy-polling the CUDA driver lock;
-            # under TP contention that spin can balloon and make the rank a straggler.
-            self.prepare_inputs_event = torch.cuda.Event(blocking=True)
+            self.prepare_inputs_event = _make_async_scheduling_event()
 
         # self.cudagraph_batch_sizes sorts in ascending order.
         if (

@@ -122,6 +122,7 @@ if TYPE_CHECKING:
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_ROCM_GFX906_PREFER_EXLLAMA: bool = False
+    VLLM_GFX906_TP1_SPIN_EVENTS: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_OINK_OPS: bool = False
@@ -1172,6 +1173,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # the only implementation for some W4A16 formats.
     "VLLM_ROCM_GFX906_PREFER_EXLLAMA": lambda: (
         os.getenv("VLLM_ROCM_GFX906_PREFER_EXLLAMA", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # gfx906 TP1 can opt into spin events to reduce host-side wake latency.
+    # Keep this disabled unless both C1 and concurrent workloads are measured;
+    # tensor-parallel ranks must retain blocking events.
+    "VLLM_GFX906_TP1_SPIN_EVENTS": lambda: (
+        os.getenv("VLLM_GFX906_TP1_SPIN_EVENTS", "0").strip().lower()
         in ("1", "true")
     ),
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(

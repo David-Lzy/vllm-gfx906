@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Reproducible thin image for the opt-in gfx906 TP1 async-event experiment.
+FROM local/vllm-gfx906:v0.27.1-phase21-llmm1
+
+COPY vllm/envs.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/envs.py
+COPY vllm/v1/worker/gpu_model_runner.py \
+    /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py

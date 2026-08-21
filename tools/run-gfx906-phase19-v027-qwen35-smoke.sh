@@ -22,6 +22,7 @@ vllm_cache_dir="${VLLM_CACHE_DIR:-/mnt/disk2/vllm-gfx906-build/phase-19/cache/${
 triton_cache_dir="${TRITON_CACHE_DIR:-${vllm_cache_dir}/triton-cache}"
 disabled_kernels="${VLLM_DISABLED_KERNELS:-}"
 prefer_exllama="${VLLM_ROCM_GFX906_PREFER_EXLLAMA:-0}"
+spin_events="${VLLM_GFX906_TP1_SPIN_EVENTS:-0}"
 keep_container="${KEEP_CONTAINER:-0}"
 docker_env_args=()
 
@@ -30,6 +31,9 @@ if [[ -n "$disabled_kernels" ]]; then
 fi
 if [[ "$prefer_exllama" != "0" ]]; then
   docker_env_args+=(--env "VLLM_ROCM_GFX906_PREFER_EXLLAMA=$prefer_exllama")
+fi
+if [[ "$spin_events" != "0" ]]; then
+  docker_env_args+=(--env "VLLM_GFX906_TP1_SPIN_EVENTS=$spin_events")
 fi
 
 mkdir -p "$result_dir" "$vllm_cache_dir" "$triton_cache_dir"
@@ -89,6 +93,7 @@ cat >"$result_dir/metadata.json" <<EOF
   "max_num_seqs": ${max_num_seqs},
   "max_num_batched_tokens": ${max_num_batched_tokens},
   "prefer_exllama": "${prefer_exllama}",
+  "spin_events": "${spin_events}",
   "test_image": "${test_image}",
   "test_image_mime_type": "${mime_type}"
 }
