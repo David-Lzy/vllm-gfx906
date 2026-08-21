@@ -10,6 +10,7 @@ readonly IMAGE="${IMAGE:-local/vllm-gfx906:v0.27.1-phase22-qwen38}"
 readonly SPLITKV_IMAGE="${SPLITKV_IMAGE:-local/vllm-gfx906:v0.27.1-phase28-splitkv}"
 readonly GPTQ_WNA16_IMAGE="${GPTQ_WNA16_IMAGE:-local/vllm-gfx906:v0.27.1-phase28-gptq-wna16}"
 readonly SPLITKV_GFX906="${SPLITKV_GFX906:-0}"
+readonly SPLITKV_DEBUG="${SPLITKV_DEBUG:-0}"
 readonly DOWNLOAD_IMAGE="${DOWNLOAD_IMAGE:-local/vllm-gfx906:v0.27.1-phase21-llmm1}"
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-28}"
 readonly PORT="${PORT:-18078}"
@@ -174,6 +175,10 @@ start() {
         echo "SPLITKV_GFX906 must be 0 or 1." >&2
         exit 2
     fi
+    if [[ "${SPLITKV_DEBUG}" != "0" && "${SPLITKV_DEBUG}" != "1" ]]; then
+        echo "SPLITKV_DEBUG must be 0 or 1." >&2
+        exit 2
+    fi
     if ! [[ "${EXECUTE_MODEL_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
         echo "EXECUTE_MODEL_TIMEOUT_SECONDS must be a positive integer." >&2
         exit 2
@@ -285,6 +290,7 @@ start() {
         -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS="${EXECUTE_MODEL_TIMEOUT_SECONDS}" \
         -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
         -e VLLM_ROCM_ENABLE_GFX906_SPLITKV="${SPLITKV_GFX906}" \
+        -e VLLM_ROCM_GFX906_SPLITKV_DEBUG="${SPLITKV_DEBUG}" \
         -e VLLM_CUSTOM_SCOPES_FOR_PROFILING="${CUSTOM_PROFILE_SCOPES}" \
         -e VLLM_FORCE_AOT_LOAD="${FORCE_AOT_LOAD}" \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
@@ -539,7 +545,7 @@ cleanup() {
         echo "Stop the current candidate before cleanup." >&2
         exit 1
     fi
-    rm -rf --one-file-system "${MODEL_DIR}" "${ROOT}/cache/${MODEL_LABEL}-"*
+    rm -rf --one-file-system "${MODEL_DIR}" "${CACHE_DIR}"
 }
 
 case "${ACTION}" in

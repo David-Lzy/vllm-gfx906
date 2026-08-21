@@ -24,6 +24,7 @@ float8_info = torch.finfo(current_platform.fp8_dtype())
 
 _MAX_SPLITS = 16
 _DEFAULT_COMPUTE_BLOCK_SIZE = 32
+_GFX906_SPLITKV_DEBUG = os.environ.get("VLLM_ROCM_GFX906_SPLITKV_DEBUG") == "1"
 
 
 # The split-kv kernel has the best performance when the
@@ -949,6 +950,18 @@ def paged_attention_2d_splitkv_decode(
             block_size,
             max_seq_len,
             max_num_splits,
+        )
+
+    if _GFX906_SPLITKV_DEBUG:
+        logger.info_once(
+            "gfx906 split-KV decode: batch=%d kv_heads=%d seq_len=%d "
+            "physical_block=%d compute_block=%d splits=%d",
+            batch_size,
+            num_kv_heads,
+            max_seq_len,
+            physical_block_size,
+            block_size,
+            actual_max_splits,
         )
 
     if actual_max_splits > max_num_splits:

@@ -1,0 +1,7 @@
+FROM local/vllm-gfx906:v0.27.1-phase28-gptq-wna16
+
+# Phase 31 retains the explicit GPTQ W4A16 adapter and overlays one
+# debug-only split-KV launch record. The log path is inert unless the isolated
+# experiment sets VLLM_ROCM_GFX906_SPLITKV_DEBUG=1.
+COPY vllm/v1/attention/ops/chunked_prefill_paged_decode.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/attention/ops/chunked_prefill_paged_decode.py
+COPY vllm/envs.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/envs.py

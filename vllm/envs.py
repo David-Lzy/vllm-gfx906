@@ -1175,6 +1175,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
         os.getenv("VLLM_ROCM_GFX906_PREFER_EXLLAMA", "0").strip().lower()
         in ("1", "true")
     ),
+    # Keep the legacy gfx906 decode path unless the isolated split-KV candidate
+    # is explicitly enabled. This remains opt-in while its scope is validated.
+    "VLLM_ROCM_ENABLE_GFX906_SPLITKV": lambda: (
+        os.getenv("VLLM_ROCM_ENABLE_GFX906_SPLITKV", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # Emit the resolved split-KV launch geometry for isolated benchmark runs.
+    "VLLM_ROCM_GFX906_SPLITKV_DEBUG": lambda: (
+        os.getenv("VLLM_ROCM_GFX906_SPLITKV_DEBUG", "0").strip().lower()
+        in ("1", "true")
+    ),
     # gfx906 TP1 can opt into spin events to reduce host-side wake latency.
     # Keep this disabled unless both C1 and concurrent workloads are measured;
     # tensor-parallel ranks must retain blocking events.

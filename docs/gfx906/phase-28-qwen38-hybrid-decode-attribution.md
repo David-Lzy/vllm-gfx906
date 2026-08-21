@@ -239,7 +239,10 @@ startup behavior and broader model coverage are validated.
 Phase 29 subsequently measured official AOT, loader, and fixed-KV recovery
 paths. Persistent AOT reuse removes more than half of repeat-start time, while
 local-filesystem prefetch and the multithread loader do not improve end-to-end
-health time. A duplicate transformed-weight cache is therefore deferred. See
-[Phase 29](phase-29-qwen38-startup-recovery.md). Attention, RCCL, GDN/Mamba, a
-new HIP C++ kernel, and further MTP depths are not the highest-value next
-change for this checkpoint on gfx906.
+health time. A duplicate transformed-weight cache is therefore deferred. Phase
+31 then confirmed that the opt-in split-KV path composes with this GPTQ repair:
+the same-model Qwen3.8 32K cache-hit decode improved another 47.6% without a
+short-decode regression. See [Phase 29](phase-29-qwen38-startup-recovery.md)
+and [Phase 31](phase-31-qwen38-gptq-splitkv-composition.md). Attention, RCCL,
+GDN/Mamba, a new HIP C++ kernel, and further MTP depths are not the
+highest-value next changes for this checkpoint on gfx906.
