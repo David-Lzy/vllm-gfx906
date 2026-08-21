@@ -20,6 +20,7 @@ candidate_label="${CANDIDATE_LABEL:-v0.27}"
 attention_config="${ATTENTION_CONFIG:-}"
 compilation_config="${COMPILATION_CONFIG:-}"
 aot_compile="${VLLM_USE_AOT_COMPILE:-}"
+mega_aot_artifact="${VLLM_USE_MEGA_AOT_ARTIFACT:-}"
 max_model_len="${MAX_MODEL_LEN:-100000}"
 gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-0.90}"
 max_num_seqs="${MAX_NUM_SEQS:-8}"
@@ -56,6 +57,7 @@ jq -n \
   --arg attention_config "$attention_config" \
   --arg compilation_config "$compilation_config" \
   --arg aot_compile "$aot_compile" \
+  --arg mega_aot_artifact "$mega_aot_artifact" \
   --argjson gpu "$gpu" \
   --argjson host_port "$host_port" \
   --argjson max_model_len "$max_model_len" \
@@ -66,6 +68,7 @@ jq -n \
     model: $model, baseline_label: $baseline_label, candidate_label: $candidate_label,
     attention_config: $attention_config,
     compilation_config: $compilation_config, aot_compile: $aot_compile,
+    mega_aot_artifact: $mega_aot_artifact,
     gpu: $gpu, host_port: $host_port,
     max_model_len: $max_model_len, gpu_memory_utilization: $gpu_memory_utilization,
     max_num_seqs: $max_num_seqs, max_num_batched_tokens: $max_num_batched_tokens}' \
@@ -90,6 +93,7 @@ run_candidate() {
   local -a attention_args=()
   local -a compilation_args=()
   local -a aot_compile_env=()
+  local -a mega_aot_artifact_env=()
 
   if [[ -n "$attention_config" ]]; then
     attention_args=(--attention-config "$attention_config")
@@ -99,6 +103,9 @@ run_candidate() {
   fi
   if [[ -n "$aot_compile" ]]; then
     aot_compile_env=(--env "VLLM_USE_AOT_COMPILE=$aot_compile")
+  fi
+  if [[ -n "$mega_aot_artifact" ]]; then
+    mega_aot_artifact_env=(--env "VLLM_USE_MEGA_AOT_ARTIFACT=$mega_aot_artifact")
   fi
 
   mkdir -p "$candidate_dir" "$cache_dir" "$triton_cache_dir"
@@ -141,6 +148,7 @@ run_candidate() {
     --env FLASH_ATTENTION_TRITON_AMD_AUTOTUNE=0 \
     --env VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
     "${aot_compile_env[@]}" \
+    "${mega_aot_artifact_env[@]}" \
     --env PROCESS_NICE=-5 \
     --env TRITON_CACHE_DIR=/root/.triton/cache \
     --env TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torch_compile_cache/torchinductor \
