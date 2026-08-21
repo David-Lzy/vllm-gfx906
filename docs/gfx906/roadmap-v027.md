@@ -11,8 +11,8 @@ ship v0.27 on MI50.
 | Stage | Scope | Promotion gate |
 | --- | --- | --- |
 | Selected backports | Completed: self-contained multimodal and hybrid/Mamba improvements on v0.26 | No candidate cleared the independent performance gate; see the Phase 16 report |
-| CPU scheduling | Active: core affinity and thread-budget comparison on isolated workers | A reproducible latency or throughput gain without tail regression |
-| Cost-aware routing | Sidecar validation against the existing Router policy | Better mixed-workload tail latency without API or streaming regressions |
+| CPU scheduling | Prepared and deferred until a production-idle window | A reproducible latency or throughput gain without tail regression |
+| Cost-aware routing | Active: isolated GPU2/GPU3 sidecars, cost-aware versus power-of-two | Better mixed-workload tail latency without API or streaming regressions |
 | Triton 3.7 port | Minimal gfx906 compiler enablement for the full v0.27 stack | Compiler microtests and routine Qwen3.5 multimodal parity pass |
 
 Only one stage is active at a time. The ordinary release requirements still
