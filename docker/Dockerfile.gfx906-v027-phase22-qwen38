@@ -1,0 +1,5 @@
+FROM local/vllm-gfx906:v0.27.1-phase21-llmm1
+
+# Phase 22 keeps the Phase 20/21 performance recovery and overlays only the
+# upstream Qwen3.8 ROCm MRoPE contract needed by the model scheduler.
+COPY vllm/model_executor/models/qwen3_5.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py
