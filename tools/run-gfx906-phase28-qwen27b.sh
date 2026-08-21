@@ -15,7 +15,8 @@ readonly PORT="${PORT:-18078}"
 readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phase19-gpu2-256.png}"
 readonly SERVED_MODEL="phase28-${MODEL_LABEL}"
 readonly MODEL_DIR="${ROOT}/models/${MODEL_LABEL}"
-readonly CACHE_DIR="${ROOT}/cache/${MODEL_LABEL}-${MODE}"
+readonly CACHE_LABEL="${CACHE_LABEL:-${MODEL_LABEL}-${MODE}}"
+readonly CACHE_DIR="${ROOT}/cache/${CACHE_LABEL}"
 readonly LOG_DIR="${ROOT}/logs/${MODEL_LABEL}-${MODE}"
 readonly CONTAINER="vllm-gfx906-phase28-${MODEL_LABEL}-${MODE}"
 readonly MIN_FREE_BEFORE_GIB=50
@@ -25,7 +26,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   MODEL_ID=<hf repo> MODEL_LABEL=<short name> tools/run-gfx906-phase28-qwen27b.sh \
-    {build-image|build-splitkv-image|fetch|start|gates|bench|stop|cleanup}
+    {build-image|build-splitkv-image|fetch|start|gates|bench|slope|stop|cleanup}
 
 Environment:
   MODE=no-mtp|mtp1|mtp2|mtp4   default: no-mtp
@@ -33,6 +34,8 @@ Environment:
   ROOT=/mnt/disk2/.../phase-28 disposable phase storage
   SPLITKV_GFX906=1             opt in to the gfx906 split-KV candidate
   IMAGE=<tag>                  use SPLITKV_IMAGE after build-splitkv-image
+  CACHE_LABEL=<name>           isolate a candidate's compile and vLLM cache
+  CONTEXT_WORDS=32768          repeated long-context word count for slope
 
 Only one model cache is allowed at a time. Run cleanup after recording a
 candidate before fetching the next checkpoint. cleanup requires CONFIRM=delete.
@@ -295,6 +298,72 @@ bench() {
     cat "${result_dir}/summary.json"
 }
 
+post_slope_case() {
+    local result_dir="$1"
+    local name="$2"
+    local payload="$3"
+    local output="${result_dir}/${name}.json"
+    local started ended elapsed code
+    started="$(date +%s.%N)"
+    code="$(curl --silent --show-error --output "${output}" --write-out '%{http_code}' \
+        --max-time 1800 -H 'content-type: application/json' --data "${payload}" \
+        "http://127.0.0.1:${PORT}/v1/chat/completions")"
+    ended="$(date +%s.%N)"
+    elapsed="$(awk -v start="${started}" -v end="${ended}" \
+        'BEGIN { printf "%.6f", end - start }')"
+    [[ "${code}" == "200" ]]
+    jq -e '.choices[0].message.content | strings | length > 0' "${output}" >/dev/null
+    jq -n --arg case_name "${name}" --argjson elapsed_seconds "${elapsed}" \
+        --argjson http_status "${code}" --arg response_file "${output}" \
+        --arg completed_at "$(date --iso-8601=seconds)" \
+        '{case: $case_name, elapsed_seconds: $elapsed_seconds,
+          http_status: $http_status, response_file: $response_file,
+          usage: {prompt_tokens: null, completion_tokens: null},
+          completed_at: $completed_at}' \
+        > "${result_dir}/${name}.meta.json"
+    jq --slurpfile response "${output}" \
+        '.usage.prompt_tokens = ($response[0].usage.prompt_tokens // null) |
+         .usage.completion_tokens = ($response[0].usage.completion_tokens // null)' \
+        "${result_dir}/${name}.meta.json" > "${result_dir}/${name}.tmp"
+    mv "${result_dir}/${name}.tmp" "${result_dir}/${name}.meta.json"
+}
+
+slope() {
+    require_model
+    require_server
+    local context_words="${CONTEXT_WORDS:-32768}"
+    if ! [[ "${context_words}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "CONTEXT_WORDS must be a positive integer." >&2
+        exit 2
+    fi
+
+    local result_dir prompt prime_payload decode_payload decode_tokens decode_elapsed
+    result_dir="${ROOT}/results/$(date -u +%Y%m%dT%H%M%SZ)-${MODEL_LABEL}-${MODE}-longctx"
+    mkdir -p "${result_dir}"
+    prompt="$(awk -v count="${context_words}" 'BEGIN { for (i = 0; i < count; i++) printf " context" }')"
+
+    prime_payload="$(jq -nc --arg model "${SERVED_MODEL}" --arg prompt "${prompt}" \
+        '{model: $model, temperature: 0, min_tokens: 1, max_tokens: 1,
+          messages: [{role: "user", content: $prompt}]}')"
+    decode_payload="$(jq -nc --arg model "${SERVED_MODEL}" --arg prompt "${prompt}" \
+        '{model: $model, temperature: 0, min_tokens: 8, max_tokens: 8,
+          messages: [{role: "user", content: $prompt}]}')"
+    post_slope_case "${result_dir}" prime "${prime_payload}"
+    post_slope_case "${result_dir}" cached_decode "${decode_payload}"
+
+    decode_tokens="$(jq -er '.usage.completion_tokens' "${result_dir}/cached_decode.meta.json")"
+    decode_elapsed="$(jq -er '.elapsed_seconds' "${result_dir}/cached_decode.meta.json")"
+    jq --argjson context_words "${context_words}" \
+        --argjson completion_tokens "${decode_tokens}" \
+        --argjson elapsed_seconds "${decode_elapsed}" \
+        '{context_words: $context_words, completion_tokens: $completion_tokens,
+          cached_decode_elapsed_seconds: $elapsed_seconds,
+          cached_decode_tok_s: ($completion_tokens / $elapsed_seconds)}' \
+        > "${result_dir}/summary.json"
+    curl --fail --silent "http://127.0.0.1:${PORT}/metrics" > "${result_dir}/metrics.prom"
+    cat "${result_dir}/summary.json"
+}
+
 stop() {
     require_model
     docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
@@ -326,6 +395,7 @@ case "${ACTION}" in
     start) start ;;
     gates) gates ;;
     bench) bench ;;
+    slope) slope ;;
     stop) stop ;;
     cleanup) cleanup ;;
     *) usage ;;

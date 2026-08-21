@@ -110,6 +110,11 @@ then narrows its runtime guard to `on_gfx906()` plus
 compile or numerics result a contained candidate failure rather than a change
 to any other ROCm target.
 
+The runner also records an identical long text prefix followed by a prefix-cache
+reuse decode. This separates one-time prefill from the decode context slope that
+split-KV is intended to change; fixed 128-token results remain the short-context
+control rather than evidence for or against the long-context candidate.
+
 ## Decision Gate
 
 - Consider a HIP C++ paged-attention implementation only when full paged
