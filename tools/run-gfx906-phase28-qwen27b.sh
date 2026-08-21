@@ -12,6 +12,7 @@ readonly SPLITKV_GFX906="${SPLITKV_GFX906:-0}"
 readonly DOWNLOAD_IMAGE="${DOWNLOAD_IMAGE:-local/vllm-gfx906:v0.27.1-phase21-llmm1}"
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-28}"
 readonly PORT="${PORT:-18078}"
+readonly EXECUTE_MODEL_TIMEOUT_SECONDS="${EXECUTE_MODEL_TIMEOUT_SECONDS:-1800}"
 readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phase19-gpu2-256.png}"
 readonly SERVED_MODEL="phase28-${MODEL_LABEL}"
 readonly MODEL_DIR="${ROOT}/models/${MODEL_LABEL}"
@@ -36,6 +37,9 @@ Environment:
   IMAGE=<tag>                  use SPLITKV_IMAGE after build-splitkv-image
   CACHE_LABEL=<name>           isolate a candidate's compile and vLLM cache
   CONTEXT_WORDS=32768          repeated long-context word count for slope
+  EXECUTE_MODEL_TIMEOUT_SECONDS=1800
+                               avoid classifying first large-shape JIT as a
+                               300-second EngineCore RPC failure
 
 Only one model cache is allowed at a time. Run cleanup after recording a
 candidate before fetching the next checkpoint. cleanup requires CONFIRM=delete.
@@ -110,6 +114,10 @@ start() {
         echo "SPLITKV_GFX906 must be 0 or 1." >&2
         exit 2
     fi
+    if ! [[ "${EXECUTE_MODEL_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "EXECUTE_MODEL_TIMEOUT_SECONDS must be a positive integer." >&2
+        exit 2
+    fi
     if [[ ! -f "${MODEL_DIR}/config.json" ]]; then
         echo "Missing model at ${MODEL_DIR}; run fetch first." >&2
         exit 1
@@ -136,6 +144,7 @@ start() {
         -e ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library \
         -e VLLM_TARGET_DEVICE=rocm \
         -e VLLM_CACHE_ROOT=/root/.cache/vllm \
+        -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS="${EXECUTE_MODEL_TIMEOUT_SECONDS}" \
         -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
         -e VLLM_ROCM_ENABLE_GFX906_SPLITKV="${SPLITKV_GFX906}" \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
