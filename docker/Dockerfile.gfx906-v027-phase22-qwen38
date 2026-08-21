@@ -1,5 +1,11 @@
+FROM aiinfos/vllm-gfx906-mobydick:v0.23.1rc0.x-rocm7.2.1-pytorch2.11.0 AS gfx906_rccl
+
 FROM local/vllm-gfx906:v0.27.1-phase21-llmm1
 
 # Phase 22 keeps the Phase 20/21 performance recovery and overlays only the
 # upstream Qwen3.8 ROCm MRoPE contract needed by the model scheduler.
+# PyTorch 2.13's bundled RCCL initializes on gfx906 but segfaults on the first
+# TP2 collective. The retained gfx906 RCCL passes the standalone all-reduce
+# gate and is copied from the known Phase 14 runtime, not from a host path.
+COPY --from=gfx906_rccl /usr/local/lib/librccl.so.1.0.70201 /opt/vllm-venv/lib/python3.12/site-packages/torch/lib/librccl.so
 COPY vllm/model_executor/models/qwen3_5.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py
