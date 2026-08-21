@@ -7,6 +7,7 @@
 #  - Chih-Chieh Yang <chih.chieh.yang@ibm.com>
 #  - Thomas Parnell <tpa@zurich.ibm.com>
 import math
+import os
 
 import torch
 
@@ -462,11 +463,13 @@ def chunked_prefill_paged_decode(
         else:
             processed_block_table = block_table.to(torch.int32)
 
-        from vllm.platforms.rocm import on_gfx12x
+        from vllm.platforms.rocm import on_gfx906
 
-        # Split kv is currently only tuned for gfx12x with head dim 256.
+        # Keep gfx906 on the legacy path unless an experiment opts in. The
+        # split-KV launch has only been validated upstream on newer RDNA GPUs.
         use_splitkv_decode = (
-            on_gfx12x()
+            on_gfx906()
+            and os.environ.get("VLLM_ROCM_ENABLE_GFX906_SPLITKV") == "1"
             and query.dtype in (torch.float16, torch.bfloat16)
             and head_size == 256
             and not use_alibi_slopes

@@ -103,6 +103,13 @@ context-length slope comparison. Reject it on Triton compilation failure,
 numerical mismatch, or a short-decode regression. This is an opt-in reuse
 experiment, not a platform-wide gate widening.
 
+The experimental branch carries the upstream implementation with provenance,
+then narrows its runtime guard to `on_gfx906()` plus
+`VLLM_ROCM_ENABLE_GFX906_SPLITKV=1`. Its default is off, and the normal Phase
+28 reference image does not contain the overlay. This makes a failed MI50
+compile or numerics result a contained candidate failure rather than a change
+to any other ROCm target.
+
 ## Decision Gate
 
 - Consider a HIP C++ paged-attention implementation only when full paged

@@ -7,6 +7,8 @@ readonly MODEL_ID="${MODEL_ID:-}"
 readonly MODEL_LABEL="${MODEL_LABEL:-}"
 readonly MODE="${MODE:-no-mtp}"
 readonly IMAGE="${IMAGE:-local/vllm-gfx906:v0.27.1-phase22-qwen38}"
+readonly SPLITKV_IMAGE="${SPLITKV_IMAGE:-local/vllm-gfx906:v0.27.1-phase28-splitkv}"
+readonly SPLITKV_GFX906="${SPLITKV_GFX906:-0}"
 readonly DOWNLOAD_IMAGE="${DOWNLOAD_IMAGE:-local/vllm-gfx906:v0.27.1-phase21-llmm1}"
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-28}"
 readonly PORT="${PORT:-18078}"
@@ -23,12 +25,14 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   MODEL_ID=<hf repo> MODEL_LABEL=<short name> tools/run-gfx906-phase28-qwen27b.sh \
-    {build-image|fetch|start|gates|bench|stop|cleanup}
+    {build-image|build-splitkv-image|fetch|start|gates|bench|stop|cleanup}
 
 Environment:
   MODE=no-mtp|mtp1|mtp2|mtp4   default: no-mtp
   PORT=18078                   temporary localhost port
   ROOT=/mnt/disk2/.../phase-28 disposable phase storage
+  SPLITKV_GFX906=1             opt in to the gfx906 split-KV candidate
+  IMAGE=<tag>                  use SPLITKV_IMAGE after build-splitkv-image
 
 Only one model cache is allowed at a time. Run cleanup after recording a
 candidate before fetching the next checkpoint. cleanup requires CONFIRM=delete.
@@ -99,6 +103,10 @@ speculative_config() {
 
 start() {
     require_model
+    if [[ "${SPLITKV_GFX906}" != "0" && "${SPLITKV_GFX906}" != "1" ]]; then
+        echo "SPLITKV_GFX906 must be 0 or 1." >&2
+        exit 2
+    fi
     if [[ ! -f "${MODEL_DIR}/config.json" ]]; then
         echo "Missing model at ${MODEL_DIR}; run fetch first." >&2
         exit 1
@@ -126,6 +134,7 @@ start() {
         -e VLLM_TARGET_DEVICE=rocm \
         -e VLLM_CACHE_ROOT=/root/.cache/vllm \
         -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
+        -e VLLM_ROCM_ENABLE_GFX906_SPLITKV="${SPLITKV_GFX906}" \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
         -e HF_HUB_OFFLINE=1 \
         -e TRANSFORMERS_OFFLINE=1 \
@@ -308,6 +317,10 @@ case "${ACTION}" in
     build-image)
         docker build -f docker/Dockerfile.gfx906-v027-phase22-qwen38 \
             -t "${IMAGE}" .
+        ;;
+    build-splitkv-image)
+        docker build -f docker/Dockerfile.gfx906-v027-phase28-splitkv \
+            -t "${SPLITKV_IMAGE}" .
         ;;
     fetch) fetch ;;
     start) start ;;

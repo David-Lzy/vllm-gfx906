@@ -1,0 +1,6 @@
+FROM local/vllm-gfx906:v0.27.1-phase22-qwen38
+
+# Phase 28 overlays the upstream split-KV implementation onto the known-good
+# Phase 22 runtime. The code remains inactive unless the runner supplies its
+# gfx906-only opt-in environment variable.
+COPY vllm/v1/attention/ops/chunked_prefill_paged_decode.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/attention/ops/chunked_prefill_paged_decode.py
