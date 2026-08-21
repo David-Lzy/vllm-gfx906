@@ -15,6 +15,7 @@ result_root="${RESULT_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23/results}"
 run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-small-mm-parity}"
 phase_root="${PHASE_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23}"
 baseline_summary_file="${BASELINE_SUMMARY_FILE:-}"
+attention_config="${ATTENTION_CONFIG:-}"
 max_model_len="${MAX_MODEL_LEN:-100000}"
 gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-0.90}"
 max_num_seqs="${MAX_NUM_SEQS:-8}"
@@ -46,6 +47,7 @@ jq -n \
   --arg baseline_image "$baseline_image" \
   --arg candidate_image "$candidate_image" \
   --arg model "$model" \
+  --arg attention_config "$attention_config" \
   --argjson gpu "$gpu" \
   --argjson host_port "$host_port" \
   --argjson max_model_len "$max_model_len" \
@@ -53,7 +55,7 @@ jq -n \
   --argjson max_num_seqs "$max_num_seqs" \
   --argjson max_num_batched_tokens "$max_num_batched_tokens" \
   '{baseline_image: $baseline_image, candidate_image: $candidate_image,
-    model: $model, gpu: $gpu, host_port: $host_port,
+    model: $model, attention_config: $attention_config, gpu: $gpu, host_port: $host_port,
     max_model_len: $max_model_len, gpu_memory_utilization: $gpu_memory_utilization,
     max_num_seqs: $max_num_seqs, max_num_batched_tokens: $max_num_batched_tokens}' \
   >"$result_dir/metadata.json"
@@ -74,6 +76,11 @@ run_candidate() {
   local triton_cache_dir="$cache_dir/triton-cache"
   local endpoint="http://127.0.0.1:$host_port"
   local deadline
+  local -a attention_args=()
+
+  if [[ -n "$attention_config" ]]; then
+    attention_args=(--attention-config "$attention_config")
+  fi
 
   mkdir -p "$candidate_dir" "$cache_dir" "$triton_cache_dir"
   container_name="vllm-gfx906-phase23-${label}-${run_id,,}"
@@ -132,7 +139,7 @@ run_candidate() {
     --mm-encoder-tp-mode data --mm-tensor-ipc direct_rpc \
     --mm-processor-cache-type shm --mm-processor-cache-gb 16 \
     --mm-shm-cache-max-object-size-mb 512 --enable-chunked-prefill \
-    --long-prefill-token-threshold 8192 >"$candidate_dir/container-id.txt"
+    --long-prefill-token-threshold 8192 "${attention_args[@]}" >"$candidate_dir/container-id.txt"
 
   deadline=$((SECONDS + 1800))
   until curl --fail --silent --show-error --max-time 3 "$endpoint/health" >"$candidate_dir/health.json" 2>>"$candidate_dir/server.log"; do

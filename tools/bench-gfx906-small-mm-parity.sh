@@ -101,7 +101,7 @@ post_once() {
   completion_tokens="$(jq -er '.usage.completion_tokens // 0' "$response")"
   elapsed_ms="$(awk -v start="$started_ns" -v end="$ended_ns" 'BEGIN { printf "%.6f", (end - start) / 1000000 }')"
 
-  jq -n \
+  jq --compact-output --null-input \
     --arg scenario "$scenario" \
     --arg phase "$phase" \
     --argjson iteration "$iteration" \
