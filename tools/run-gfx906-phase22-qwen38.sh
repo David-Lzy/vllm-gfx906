@@ -7,6 +7,7 @@ readonly IMAGE="local/vllm-gfx906:v0.27.1-phase22-qwen38"
 readonly ROOT="/mnt/disk2/vllm-gfx906-build/phase-22"
 readonly MODEL_DIR="${ROOT}/hf-model"
 readonly CACHE_DIR="${ROOT}/cache"
+readonly TRITON_CACHE_DIR="${CACHE_DIR}/triton-cache"
 readonly LOG_DIR="${ROOT}/logs"
 readonly PORT=18075
 readonly CONTAINER="vllm-gfx906-phase22-qwen38-${MODE}"
@@ -27,7 +28,7 @@ if ! curl --fail --silent --max-time 10 http://127.0.0.1:8002/health >/dev/null;
     exit 1
 fi
 
-mkdir -p "${CACHE_DIR}" "${LOG_DIR}"
+mkdir -p "${CACHE_DIR}" "${TRITON_CACHE_DIR}" "${LOG_DIR}"
 docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
 
 extra_command=""
@@ -39,11 +40,18 @@ docker run -d --name "${CONTAINER}" --network host \
     --device /dev/kfd --device /dev/dri --group-add video --ipc host --shm-size 64g \
     -v "${MODEL_DIR}:/model:ro" \
     -v "${CACHE_DIR}:/root/.cache/vllm" \
+    -v "${TRITON_CACHE_DIR}:/root/.triton/cache" \
     -e HIP_VISIBLE_DEVICES=2,3 \
-    -e ROCR_VISIBLE_DEVICES=2,3 \
     -e PYTORCH_ROCM_ARCH=gfx906 \
+    -e ROCM_ARCH=gfx906 \
+    -e ROCM_PATH=/opt/rocm \
+    -e ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library \
     -e VLLM_TARGET_DEVICE=rocm \
+    -e VLLM_CACHE_ROOT=/root/.cache/vllm \
     -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
+    -e TRITON_CACHE_DIR=/root/.triton/cache \
+    -e HF_HUB_OFFLINE=1 \
+    -e TRANSFORMERS_OFFLINE=1 \
     -e OMP_NUM_THREADS=12 \
     -e OPENBLAS_NUM_THREADS=12 \
     -e MKL_NUM_THREADS=12 \
@@ -54,6 +62,7 @@ docker run -d --name "${CONTAINER}" --network host \
     "exec /opt/vllm-venv/bin/vllm serve /model \\
       --host 127.0.0.1 --port ${PORT} --served-model-name ${SERVED_MODEL} \\
       --tensor-parallel-size 2 --dtype float16 --quantization awq \\
+      --trust-remote-code \\
       --max-model-len 100000 --gpu-memory-utilization 0.88 \\
       --max-num-seqs 2 --max-num-batched-tokens 8192 \\
       --limit-mm-per-prompt '{\"image\":64,\"video\":0}' \\
