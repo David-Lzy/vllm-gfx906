@@ -17,4 +17,8 @@ fi
 
 uv pip install --python "$venv/bin/python" -r python/requirements.txt
 uv pip install --python "$venv/bin/python" --no-build-isolation --editable .
+
+# The image's system Triton remains visible for its PyTorch install. Prefer the
+# mounted 3.7 source so this smoke validates the compiler that was just built.
+export PYTHONPATH="/workspace/triton/python${PYTHONPATH:+:$PYTHONPATH}"
 "$venv/bin/python" /workspace/phase19/tools/gfx906_triton37_smoke.py
