@@ -88,3 +88,25 @@ def test_gfx906_opt_in_prefers_exllama(monkeypatch):
     )
     monkeypatch.setattr("vllm.envs.VLLM_ROCM_GFX906_PREFER_EXLLAMA", True)
     assert choose_mp_linear_kernel(config).__name__ == "ExllamaLinearKernel"
+
+
+@pytest.mark.skipif(
+    not (current_platform.is_rocm() and on_gfx906()),
+    reason="gfx906 ROCm only",
+)
+def test_gfx906_gptq_backend_is_explicit_opt_in(monkeypatch):
+    """The GPTQ adapter must not replace the default Triton selection."""
+    config = MPLinearLayerConfig(
+        full_weight_shape=(1024, 256),
+        partition_weight_shape=(1024, 256),
+        weight_type=scalar_types.uint4,
+        act_type=torch.float16,
+        group_size=32,
+        zero_points=True,
+        has_g_idx=False,
+    )
+    monkeypatch.setattr(
+        "vllm.model_executor.kernels.linear._get_linear_backend",
+        lambda: "gfx906_gptq",
+    )
+    assert choose_mp_linear_kernel(config).__name__ == "Gfx906GPTQWNA16LinearKernel"

@@ -157,6 +157,7 @@ LinearBackend = Literal[
     "fbgemm",
     "conch",
     "exllama",
+    "gfx906_gptq",
     "emulation",
     "xpu",
     "xpu_woq",
@@ -232,6 +233,7 @@ class KernelConfig:
     - "fbgemm": Use FBGEMM kernels
     - "conch": Use Conch mixed-precision kernels
     - "exllama": Use Exllama mixed-precision kernels
+    - "gfx906_gptq": Use the explicit gfx906 GPTQ-compatible W4A16 adapter
     - "emulation": Use slow dequant-to-BF16 emulation (for testing only)
     - "xpu": Use XPU kernels
     - "xpu_woq": Use XPU kernels for weight-only quantization (e.g. W8A16)

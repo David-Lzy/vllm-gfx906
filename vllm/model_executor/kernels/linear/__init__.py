@@ -45,6 +45,9 @@ from vllm.model_executor.kernels.linear.mixed_precision.dynamic_4bit import (
 from vllm.model_executor.kernels.linear.mixed_precision.exllama import (
     ExllamaLinearKernel,
 )
+from vllm.model_executor.kernels.linear.mixed_precision.gfx906_gptq_wna16 import (
+    Gfx906GPTQWNA16LinearKernel,
+)
 from vllm.model_executor.kernels.linear.mixed_precision.humming import (
     HummingLinearKernel,
 )
@@ -301,6 +304,9 @@ _LINEAR_BACKEND_KERNEL_MAP: dict[str, set[type]] = {
     "exllama": {
         ExllamaLinearKernel,
     },
+    "gfx906_gptq": {
+        Gfx906GPTQWNA16LinearKernel,
+    },
     "emulation": {
         EmulationMxfp8LinearKernel,
         EmulationNvFp4LinearKernel,
@@ -424,6 +430,8 @@ _POSSIBLE_KERNELS: dict[PlatformEnum, list[type[MPLinearKernel]]] = {
         RDNA3W4A16LinearKernel,
         RDNAHybridW4A16LinearKernel,
         TritonW4A16LinearKernel,
+        # This candidate remains behind --linear-backend gfx906_gptq.
+        Gfx906GPTQWNA16LinearKernel,
         ConchLinearKernel,
         ExllamaLinearKernel,
     ],
@@ -1197,6 +1205,7 @@ __all__ = [
     "CutlassW4A8LinearKernel",
     "Dynamic4bitLinearKernel",
     "ExllamaLinearKernel",
+    "Gfx906GPTQWNA16LinearKernel",
     "RDNAHybridW4A16LinearKernel",
     "MacheteLinearKernel",
     "MarlinLinearKernel",

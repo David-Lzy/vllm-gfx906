@@ -1,0 +1,8 @@
+FROM local/vllm-gfx906:v0.27.1-phase28-splitkv
+
+# Phase 28 overlays the explicit gfx906 GPTQ-compatible W4A16 adapter. It is
+# inert unless the temporary runner passes --linear-backend gfx906_gptq.
+COPY vllm/model_executor/kernels/linear/mixed_precision/gfx906_gptq_wna16.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/mixed_precision/gfx906_gptq_wna16.py
+COPY vllm/model_executor/kernels/linear/mixed_precision/__init__.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/mixed_precision/__init__.py
+COPY vllm/model_executor/kernels/linear/__init__.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/__init__.py
+COPY vllm/config/kernel.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/config/kernel.py

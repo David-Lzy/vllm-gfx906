@@ -8,11 +8,16 @@ readonly MODEL_LABEL="${MODEL_LABEL:-}"
 readonly MODE="${MODE:-no-mtp}"
 readonly IMAGE="${IMAGE:-local/vllm-gfx906:v0.27.1-phase22-qwen38}"
 readonly SPLITKV_IMAGE="${SPLITKV_IMAGE:-local/vllm-gfx906:v0.27.1-phase28-splitkv}"
+readonly GPTQ_WNA16_IMAGE="${GPTQ_WNA16_IMAGE:-local/vllm-gfx906:v0.27.1-phase28-gptq-wna16}"
 readonly SPLITKV_GFX906="${SPLITKV_GFX906:-0}"
 readonly DOWNLOAD_IMAGE="${DOWNLOAD_IMAGE:-local/vllm-gfx906:v0.27.1-phase21-llmm1}"
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-28}"
 readonly PORT="${PORT:-18078}"
 readonly EXECUTE_MODEL_TIMEOUT_SECONDS="${EXECUTE_MODEL_TIMEOUT_SECONDS:-1800}"
+readonly PROFILE_ATTACH="${PROFILE_ATTACH:-0}"
+readonly TORCH_PROFILER="${TORCH_PROFILER:-0}"
+readonly CUSTOM_PROFILE_SCOPES="${CUSTOM_PROFILE_SCOPES:-0}"
+readonly LINEAR_BACKEND="${LINEAR_BACKEND:-auto}"
 readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phase19-gpu2-256.png}"
 readonly SERVED_MODEL="phase28-${MODEL_LABEL}"
 readonly MODEL_DIR="${ROOT}/models/${MODEL_LABEL}"
@@ -27,7 +32,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   MODEL_ID=<hf repo> MODEL_LABEL=<short name> tools/run-gfx906-phase28-qwen27b.sh \
-    {build-image|build-splitkv-image|fetch|start|gates|bench|slope|stop|cleanup}
+    {build-image|build-splitkv-image|build-gptq-wna16-image|fetch|start|gates|bench|slope|stop|cleanup}
 
 Environment:
   MODE=no-mtp|mtp1|mtp2|mtp4   default: no-mtp
@@ -40,6 +45,16 @@ Environment:
   EXECUTE_MODEL_TIMEOUT_SECONDS=1800
                                avoid classifying first large-shape JIT as a
                                300-second EngineCore RPC failure
+  PROFILE_ATTACH=1             temporary SYS_PTRACE/seccomp relaxation for
+                               rocprofv3 attach on the disposable container
+  TORCH_PROFILER=1             enable the vLLM torch/ROCm profiler on the
+                               temporary server; traces stay in its cache
+  CUSTOM_PROFILE_SCOPES=1      add vLLM record_function scopes to that trace;
+                               requires TORCH_PROFILER=1
+  LINEAR_BACKEND=auto|gfx906_gptq
+                               choose the default linear path or the explicit
+                               gfx906 GPTQ-compatible W4A16 experiment
+  GPTQ_WNA16_IMAGE=<tag>       tag written by build-gptq-wna16-image
 
 Only one model cache is allowed at a time. Run cleanup after recording a
 candidate before fetching the next checkpoint. cleanup requires CONFIRM=delete.
@@ -118,6 +133,26 @@ start() {
         echo "EXECUTE_MODEL_TIMEOUT_SECONDS must be a positive integer." >&2
         exit 2
     fi
+    if [[ "${PROFILE_ATTACH}" != "0" && "${PROFILE_ATTACH}" != "1" ]]; then
+        echo "PROFILE_ATTACH must be 0 or 1." >&2
+        exit 2
+    fi
+    if [[ "${TORCH_PROFILER}" != "0" && "${TORCH_PROFILER}" != "1" ]]; then
+        echo "TORCH_PROFILER must be 0 or 1." >&2
+        exit 2
+    fi
+    if [[ "${CUSTOM_PROFILE_SCOPES}" != "0" && "${CUSTOM_PROFILE_SCOPES}" != "1" ]]; then
+        echo "CUSTOM_PROFILE_SCOPES must be 0 or 1." >&2
+        exit 2
+    fi
+    if [[ "${CUSTOM_PROFILE_SCOPES}" == "1" && "${TORCH_PROFILER}" != "1" ]]; then
+        echo "CUSTOM_PROFILE_SCOPES=1 requires TORCH_PROFILER=1." >&2
+        exit 2
+    fi
+    if [[ "${LINEAR_BACKEND}" != "auto" && "${LINEAR_BACKEND}" != "gfx906_gptq" ]]; then
+        echo "LINEAR_BACKEND must be auto or gfx906_gptq." >&2
+        exit 2
+    fi
     if [[ ! -f "${MODEL_DIR}/config.json" ]]; then
         echo "Missing model at ${MODEL_DIR}; run fetch first." >&2
         exit 1
@@ -130,10 +165,20 @@ start() {
     mkdir -p "${CACHE_DIR}/triton-cache" "${LOG_DIR}"
     docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
 
-    local extra_command
+    local extra_command profiler_command
+    local -a profile_security_args=()
     extra_command="$(speculative_config)"
+    profiler_command=""
+    if [[ "${TORCH_PROFILER}" == "1" ]]; then
+        mkdir -p "${CACHE_DIR}/torch-profiler"
+        profiler_command=" --profiler-config '{\"profiler\":\"torch\",\"torch_profiler_dir\":\"/root/.cache/vllm/torch-profiler\",\"torch_profiler_with_stack\":false,\"torch_profiler_use_gzip\":false,\"torch_profiler_dump_cuda_time_total\":true,\"ignore_frontend\":true}'"
+    fi
+    if [[ "${PROFILE_ATTACH}" == "1" ]]; then
+        profile_security_args=(--cap-add SYS_PTRACE --security-opt seccomp=unconfined)
+    fi
     docker run -d --name "${CONTAINER}" --network host \
         --device /dev/kfd --device /dev/dri --group-add video --ipc host --shm-size 64g \
+        "${profile_security_args[@]}" \
         -v "${MODEL_DIR}:/model:ro" \
         -v "${CACHE_DIR}:/root/.cache/vllm" \
         -v "${CACHE_DIR}/triton-cache:/root/.triton/cache" \
@@ -147,6 +192,7 @@ start() {
         -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS="${EXECUTE_MODEL_TIMEOUT_SECONDS}" \
         -e VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
         -e VLLM_ROCM_ENABLE_GFX906_SPLITKV="${SPLITKV_GFX906}" \
+        -e VLLM_CUSTOM_SCOPES_FOR_PROFILING="${CUSTOM_PROFILE_SCOPES}" \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
         -e HF_HUB_OFFLINE=1 \
         -e TRANSFORMERS_OFFLINE=1 \
@@ -169,7 +215,8 @@ start() {
           --mm-encoder-tp-mode data --renderer-num-workers 1 \\
           --enable-prefix-caching --enable-chunked-prefill --mamba-cache-mode align \\
           --skip-mm-profiling --reasoning-parser qwen3 \\
-          --default-chat-template-kwargs '{\"enable_thinking\":false}'${extra_command}" \
+          --default-chat-template-kwargs '{\"enable_thinking\":false}' \\
+          --linear-backend ${LINEAR_BACKEND}${extra_command}${profiler_command}" \
         > "${LOG_DIR}/container-id.txt"
     wait_for_server
 }
@@ -405,6 +452,10 @@ case "${ACTION}" in
     build-splitkv-image)
         docker build -f docker/Dockerfile.gfx906-v027-phase28-splitkv \
             -t "${SPLITKV_IMAGE}" .
+        ;;
+    build-gptq-wna16-image)
+        docker build -f docker/Dockerfile.gfx906-v027-phase28-gptq-wna16 \
+            -t "${GPTQ_WNA16_IMAGE}" .
         ;;
     fetch) fetch ;;
     start) start ;;

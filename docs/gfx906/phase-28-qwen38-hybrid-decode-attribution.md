@@ -172,3 +172,72 @@ change.
 Publish the category breakdown, the one highest-value next implementation path,
 and a no-go or success decision. No result from this phase is a production
 promotion by itself.
+
+## Result: W4A16, Not Attention Or RCCL
+
+The Phase 28 implementation uses vLLM's built-in torch profiler controls rather
+than a new in-process HIP-event hook. `rocprofv3 --attach` injected successfully
+on ROCm 7.2 but did not export usable dispatch records twice; the temporary
+service instead enabled `--profiler-config` and used `/start_profile` and
+`/stop_profile` around only the second eight-token, prefix-cache-hit decode.
+
+On TP1, that 32,780-token Qwen3.6 control took 30.531 seconds in
+`gpu_model_runner: forward` across eight decode steps. The generic
+`triton_w4a16_gemm_kernel` consumed 26.045 seconds (85.3%). The opt-in
+split-KV attention kernel consumed 0.288 seconds (0.94%), NCCL device work
+about 0.112 seconds (0.37%), and GDN/Mamba kernels were below those categories.
+The evidence therefore rejects an attention or RCCL custom operator as the
+first repair on gfx906.
+
+The checkpoint uses asymmetric compressed-tensors W4A16, group size 32. The
+existing ROCm image already contains the HIP `gptq_shuffle` and `gptq_gemm`
+operators, but vLLM's generic compressed-tensors selection chose the slow
+Triton W4A16 kernel. The community `ttdxq/gfx906-vllm` adapter shows how to
+convert that packed layout for the existing GPTQ operators. Phase 28 introduces
+`Gfx906GPTQWNA16LinearKernel`, which performs that layout adaptation and is
+available only through `--linear-backend gfx906_gptq`; default automatic
+selection remains unchanged.
+
+This is deliberately not a new HIP C++ operator. Reusing the existing native
+operators gives a smaller, reviewable first fix while preserving a clear path
+to a custom kernel only if a later profile identifies a remaining bottleneck.
+The closest external evidence is the Qwen hybrid attention investigation in
+[vLLM issue #50264](https://github.com/vllm-project/vllm/issues/50264), the
+upstream [split-KV PR #45916](https://github.com/vllm-project/vllm/pull/45916),
+and the existing [gfx906 GPTQ implementation](https://github.com/ttdxq/gfx906-vllm).
+
+## Result: Decode Measurements
+
+All measurements used the v0.27 gfx906 image, TP2 on GPU2/GPU3, FP16,
+100K context, 32,768-word repeated text prefix, and an eight-token cache-hit
+decode unless stated otherwise. Routine correctness gates were text, one/two
+256-square images, and JSON `3/3`; every no-MTP GPTQ result below passed them
+with no HTTP 5xx, OOM, FSM, or RCCL fatal event.
+
+| Candidate | Short fixed-128 decode | 32K cache-hit decode | Interpretation |
+| --- | ---: | ---: | --- |
+| Qwen3.6, generic Triton W4A16 | 0.441 tok/s | 0.238 tok/s | Phase 28 control |
+| Qwen3.6, split-KV only | - | 0.259 tok/s | +8.8%; correct but not dominant |
+| Qwen3.6, gfx906 GPTQ W4A16 | 35.91 tok/s | 1.226 tok/s | 5.15x long-context recovery |
+| Qwen3.8, Phase 22 generic Triton W4A16 | 0.442 tok/s | - | prior functional baseline |
+| Qwen3.8, gfx906 GPTQ W4A16, no-MTP | 35.67 tok/s | 1.353 tok/s | 80.8x short recovery; 5.68x vs the original long control |
+| Qwen3.8, gfx906 GPTQ W4A16, MTP1 | 24.99 tok/s | not run | 29.9% slower than no-MTP; branch stopped |
+
+MTP1 remained multimodally correct in the routine gate, but it is a clear
+short-decode regression after the linear repair. Per the phase stop rule,
+MTP2 and MTP4 were not started. This avoids spending repeated graph-warmup
+time on a branch that is already outside the non-regression gate.
+
+## Decision And Follow-up
+
+Phase 28 succeeds as an isolated performance repair: it exceeds the requested
+ten-percent improvement by a large margin and raises the problematic
+`0.238 tok/s` long-context control to `1.353 tok/s` for Qwen3.8. It does not
+yet authorize a production promotion. The backend remains explicit because
+its cold load/repacking path is materially slower than generic Triton and the
+validation set intentionally excludes production-scale 32/64-image tests.
+
+The next production-readiness work is to cache the transformed layout during
+load, broaden model-format coverage, and run an approved canary. Attention,
+RCCL, GDN/Mamba, a new HIP C++ kernel, and further MTP depths are not the
+highest-value next change for this checkpoint on gfx906.
