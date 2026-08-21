@@ -1,0 +1,79 @@
+From f797708c0626e5f9840ca5b0a98790e2c7cb09ad Mon Sep 17 00:00:00 2001
+From: David Lzy <davidli@localhost>
+Date: Fri, 21 Aug 2026 00:00:00 +0000
+Subject: [PATCH] amd: register Vega20 gfx906 target family
+
+Restore the narrow target classification used by the validated gfx906 Triton
+3.6 fork. This allows the generic AMD lowering pipeline to select its existing
+64-lane and conservative LDS behavior instead of rejecting the target as
+unknown.
+
+---
+ third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h    | 1 +
+ third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp       | 2 ++
+ third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp      | 4 ++++
+ 3 files changed, 7 insertions(+)
+
+diff --git a/third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h b/third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h
+index a689fe4..9c743fe 100644
+--- a/third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h
++++ b/third_party/amd/include/TritonAMDGPUToLLVM/TargetUtils.h
+@@ -8,6 +8,7 @@ namespace mlir::triton::AMD {
+ // A list of ISA families we care about.
+ enum class ISAFamily {
+   Unknown,
++  VEGA20,
+   CDNA1,
+   CDNA2,
+   CDNA3,
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+index a906fa9..4919f27 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+@@ -71,6 +71,7 @@ llvm::AMDGPU::GPUKind TargetInfo::getGPUKind() const {
+ 
+ int TargetInfo::getWarpSize() const {
+   switch (getISAFamily()) {
++  case ISAFamily::VEGA20:
+   case ISAFamily::CDNA1:
+   case ISAFamily::CDNA2:
+   case ISAFamily::CDNA3:
+@@ -683,6 +684,7 @@ bool TargetInfo::requiresAliasInfoForAsyncOps() const {
+ 
+ bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth) const {
+   switch (getISAFamily()) {
++  case ISAFamily::VEGA20:
+   case ISAFamily::CDNA3:
+     // Disable 8 and 16 bits because they get extended to 32 bit.
+     return llvm::is_contained({32, /*16, 8*/}, bitWidth);
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
+index 47c5e30..724b09c 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
+@@ -22,6 +22,8 @@ ISAFamily deduceISAFamily(llvm::StringRef arch) {
+     return ISAFamily::CDNA2;
+   case llvm::AMDGPU::GK_GFX908:
+     return ISAFamily::CDNA1;
++  case llvm::AMDGPU::GK_GFX906:
++    return ISAFamily::VEGA20;
+   default:
+     break;
+   }
+@@ -41,6 +43,7 @@ ISAFamily deduceISAFamily(llvm::StringRef arch) {
+ 
+ bool supportsVDot(llvm::StringRef arch) {
+   switch (deduceISAFamily(arch)) {
++  case AMD::ISAFamily::VEGA20:
+   case AMD::ISAFamily::CDNA1:
+   case AMD::ISAFamily::CDNA2:
+   case AMD::ISAFamily::CDNA3:
+@@ -57,6 +60,7 @@ bool isCDNA(ISAFamily isaFamily) {
+ 
+ bool isCDNA(ISAFamily isaFamily) {
+   switch (isaFamily) {
++  case AMD::ISAFamily::VEGA20:
+   case ISAFamily::CDNA1:
+   case ISAFamily::CDNA2:
+   case ISAFamily::CDNA3:
+-- 
+2.47.0
