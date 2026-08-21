@@ -35,8 +35,11 @@ RUN apt-get update -q -y \
         pkg-config \
         protobuf-compiler \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/install.sh \
-        | env UV_INSTALL_DIR=/usr/local/bin sh \
+    && curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh \
+        -o /tmp/uv-install.sh \
+    && head -1 /tmp/uv-install.sh | grep -q '^#!' \
+    && env UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
+    && rm -f /tmp/uv-install.sh \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain 1.95 \
     && uv --version \
