@@ -77,6 +77,15 @@ The checkpoint stays in an isolated temporary cache and is removed after the
 evidence is recorded. No 32/64-image or 4096-square workload is part of this
 phase.
 
+## Reproducible Controls
+
+`tools/run-gfx906-phase28-qwen27b.sh` runs only on the reserved development
+pair. It refuses to start unless the production health endpoint is healthy;
+all candidate weights, compile cache, logs, and raw results live outside the
+repository. The control order is Qwen3.6 first, then explicit cleanup, then
+Qwen3.8. Each model is measured in no-MTP mode first, followed by MTP depths
+one, two, and four only while the previous mode stays correct and non-regressive.
+
 ## Decision Gate
 
 - Consider a HIP C++ paged-attention implementation only when full paged
