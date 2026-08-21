@@ -15,8 +15,11 @@ result_root="${RESULT_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23/results}"
 run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-small-mm-parity}"
 phase_root="${PHASE_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23}"
 baseline_summary_file="${BASELINE_SUMMARY_FILE:-}"
+baseline_label="${BASELINE_LABEL:-v0.23}"
+candidate_label="${CANDIDATE_LABEL:-v0.27}"
 attention_config="${ATTENTION_CONFIG:-}"
 compilation_config="${COMPILATION_CONFIG:-}"
+aot_compile="${VLLM_USE_AOT_COMPILE:-}"
 max_model_len="${MAX_MODEL_LEN:-100000}"
 gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-0.90}"
 max_num_seqs="${MAX_NUM_SEQS:-8}"
@@ -48,8 +51,11 @@ jq -n \
   --arg baseline_image "$baseline_image" \
   --arg candidate_image "$candidate_image" \
   --arg model "$model" \
+  --arg baseline_label "$baseline_label" \
+  --arg candidate_label "$candidate_label" \
   --arg attention_config "$attention_config" \
   --arg compilation_config "$compilation_config" \
+  --arg aot_compile "$aot_compile" \
   --argjson gpu "$gpu" \
   --argjson host_port "$host_port" \
   --argjson max_model_len "$max_model_len" \
@@ -57,7 +63,10 @@ jq -n \
   --argjson max_num_seqs "$max_num_seqs" \
   --argjson max_num_batched_tokens "$max_num_batched_tokens" \
   '{baseline_image: $baseline_image, candidate_image: $candidate_image,
-    model: $model, attention_config: $attention_config, gpu: $gpu, host_port: $host_port,
+    model: $model, baseline_label: $baseline_label, candidate_label: $candidate_label,
+    attention_config: $attention_config,
+    compilation_config: $compilation_config, aot_compile: $aot_compile,
+    gpu: $gpu, host_port: $host_port,
     max_model_len: $max_model_len, gpu_memory_utilization: $gpu_memory_utilization,
     max_num_seqs: $max_num_seqs, max_num_batched_tokens: $max_num_batched_tokens}' \
   >"$result_dir/metadata.json"
@@ -80,12 +89,16 @@ run_candidate() {
   local deadline
   local -a attention_args=()
   local -a compilation_args=()
+  local -a aot_compile_env=()
 
   if [[ -n "$attention_config" ]]; then
     attention_args=(--attention-config "$attention_config")
   fi
   if [[ -n "$compilation_config" ]]; then
     compilation_args=(--compilation-config "$compilation_config")
+  fi
+  if [[ -n "$aot_compile" ]]; then
+    aot_compile_env=(--env "VLLM_USE_AOT_COMPILE=$aot_compile")
   fi
 
   mkdir -p "$candidate_dir" "$cache_dir" "$triton_cache_dir"
@@ -127,6 +140,7 @@ run_candidate() {
     --env FLASH_ATTENTION_TRITON_AMD_REF=TRUE \
     --env FLASH_ATTENTION_TRITON_AMD_AUTOTUNE=0 \
     --env VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
+    "${aot_compile_env[@]}" \
     --env PROCESS_NICE=-5 \
     --env TRITON_CACHE_DIR=/root/.triton/cache \
     --env TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torch_compile_cache/torchinductor \
@@ -214,9 +228,11 @@ jq -n \
   }' >"$result_dir/comparison.json"
 
 {
-  printf '# Phase 23: v0.27 Small Multimodal Release-Parity Comparison\n\n'
+  printf '# Small Multimodal Parity Comparison\n\n'
   printf 'Both candidates used GPU%s, the same checkpoint cache, and the production serving parameters.\n\n' "$gpu"
-  printf '| Scenario | v0.23 tok/s | v0.27 tok/s | v0.27 / v0.23 | v0.23 ms | v0.27 ms |\n| --- | ---: | ---: | ---: | ---: | ---: |\n'
+  printf '| Scenario | %s tok/s | %s tok/s | %s / %s | %s ms | %s ms |\n| --- | ---: | ---: | ---: | ---: | ---: |\n' \
+    "$baseline_label" "$candidate_label" "$candidate_label" "$baseline_label" \
+    "$baseline_label" "$candidate_label"
   jq -r '.scenarios[] | "| \(.scenario) | \(.baseline_toks) | \(.candidate_toks) | \(.throughput_ratio) | \(.baseline_latency_ms) | \(.candidate_latency_ms) |"' \
     "$result_dir/comparison.json"
   jq -r '"\nRelease floor (>=95% in every routine scenario): \(.release_candidate)."' "$result_dir/comparison.json"
