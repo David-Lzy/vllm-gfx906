@@ -40,6 +40,9 @@ jq -n \
 docker run --rm \
     --entrypoint /opt/vllm-venv/bin/hf \
     -v "${MODEL_DIR}:/model-dir" \
+    -e HF_XET_HIGH_PERFORMANCE=1 \
+    -e HF_XET_NUM_CONCURRENT_RANGE_GETS=64 \
+    -e HF_HUB_DOWNLOAD_TIMEOUT=60 \
     "${IMAGE}" \
     download "${MODEL_ID}" --revision "${revision}" --local-dir /model-dir
 
