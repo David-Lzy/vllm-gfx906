@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary model | Qwen3.8 27B AWQ 4-bit | unverified | experimental | Isolated TP2 Qwen3.8 plus MTP1 passed routine text, image, and JSON checks; not a production candidate |
+| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.27 TP2 at 100K passed text, image, JSON, no-MTP, and MTP1; MTP1 improved fixed-128 decode 54.6%, but it is not a production throughput candidate |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -21,7 +21,7 @@ Status meanings:
 | Quantization | Classic AWQ weights | verified-current | planned-v0.26 | Primary quantized weight path |
 | Attention | gfx906 Triton attention | verified-current | planned-v0.26 | A fallback must remain available |
 | Speculation | Qwen3.5 DFlash | verified-current (smoke) | experimental | Needs full throughput and quality evidence |
-| Speculation | Qwen3.8 native MTP1 | unverified | experimental | Isolated v0.26 TP2 result doubled fixed-length decode versus no-MTP; requires separate production evaluation |
+| Speculation | Qwen3.8 native MTP1 | experimental | experimental | v0.27 TP2 fixed-128 decode: 0.6828 tok/s versus 0.4417 no-MTP (+54.6%); 100K capacity falls from 4.80x to 4.34x |
 | MoE | 35B-A3B BF16 TP4 | verified-current (older experiments) | planned-v0.26 | No EP requirement for base support |
 | KV cache | TurboQuant `k8v4` | verified-current (smoke) | experimental | Optional capacity mode |
 | KV cache | TurboQuant `4bit_nc` | verified-current (smoke) | experimental | Optional capacity mode |
