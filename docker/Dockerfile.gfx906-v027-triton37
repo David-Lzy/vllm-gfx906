@@ -87,6 +87,10 @@ print(f"hip={torch.version.hip}")
 print(f"triton={triton.__version__}")
 PY
 
+# The upstream PyTorch ROCm 7.2 wheel omits Vega20 Tensile data. The base
+# image retains the matching ROCm 7.2.1 gfx906 library bundle at this path.
+ENV ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library
+
 WORKDIR /workspace
 ENTRYPOINT ["vllm"]
 CMD ["--help"]

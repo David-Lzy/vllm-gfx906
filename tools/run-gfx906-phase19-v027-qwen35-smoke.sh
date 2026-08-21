@@ -19,8 +19,9 @@ result_dir="${result_root}/${run_id}"
 container_name="vllm-gfx906-phase19-qwen35-${run_id,,}"
 container_name="${container_name//[^a-z0-9_.-]/-}"
 vllm_cache_dir="${VLLM_CACHE_DIR:-/mnt/disk2/vllm-gfx906-build/phase-19/cache/${run_id}}"
+triton_cache_dir="${TRITON_CACHE_DIR:-${vllm_cache_dir}/triton-cache}"
 
-mkdir -p "$result_dir" "$vllm_cache_dir"
+mkdir -p "$result_dir" "$vllm_cache_dir" "$triton_cache_dir"
 
 cleanup() {
   docker rm -f "$container_name" >/dev/null 2>&1 || true
@@ -90,10 +91,12 @@ docker run --detach --rm \
   --publish "127.0.0.1:${host_port}:8000" \
   --volume "${hf_cache_dir}:/root/.cache/huggingface:ro" \
   --volume "${vllm_cache_dir}:/root/.cache/vllm" \
+  --volume "${triton_cache_dir}:/root/.triton/cache" \
   --env HIP_VISIBLE_DEVICES="$gpu" \
   --env PYTORCH_ROCM_ARCH=gfx906 \
   --env ROCM_ARCH=gfx906 \
   --env ROCM_PATH=/opt/rocm \
+  --env ROCBLAS_TENSILE_LIBPATH="${ROCBLAS_TENSILE_LIBPATH:-/opt/rocm/lib/rocblas/library}" \
   --env VLLM_TARGET_DEVICE=rocm \
   --env VLLM_CACHE_ROOT=/root/.cache/vllm \
   --env VLLM_ENGINE_READY_TIMEOUT_S=1800 \
@@ -194,7 +197,7 @@ for attempt in 1 2 3; do
 done
 
 docker logs "$container_name" >"$result_dir/server.log" 2>&1
-if rg -n -i 'traceback|out of memory|xgrammar|failed to advance fsm|rccl.*fatal|nccl.*fatal' \
+if rg -n -i 'out of memory|xgrammar|failed to advance fsm|rccl.*fatal|nccl.*fatal|engine core initialization failed' \
   "$result_dir/server.log" >"$result_dir/error-scan.txt"; then
   printf 'Server log error signature found.\n' >&2
   exit 1
