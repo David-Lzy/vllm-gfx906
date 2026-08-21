@@ -42,7 +42,11 @@ def main() -> None:
     assert torch.cuda.is_available(), "HIP device is required"
     device = torch.device("cuda")
     name = torch.cuda.get_device_name(device)
-    assert "gfx906" in name.lower(), f"expected gfx906, got {name!r}"
+    properties = torch.cuda.get_device_properties(device)
+    architecture = getattr(properties, "gcnArchName", "")
+    assert "gfx906" in architecture.lower(), (
+        f"expected gfx906 architecture, got device={name!r} arch={architecture!r}"
+    )
     assert triton.__version__.startswith("3.7.1"), triton.__version__
 
     vector_size = 256
@@ -69,6 +73,7 @@ def main() -> None:
         json.dumps(
             {
                 "device": name,
+                "gcn_arch": architecture,
                 "hip": torch.version.hip,
                 "torch": torch.__version__,
                 "triton": triton.__version__,
