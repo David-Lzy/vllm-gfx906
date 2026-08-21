@@ -16,6 +16,7 @@ run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-small-mm-parity}"
 phase_root="${PHASE_ROOT:-/mnt/disk2/vllm-gfx906-build/phase-23}"
 baseline_summary_file="${BASELINE_SUMMARY_FILE:-}"
 attention_config="${ATTENTION_CONFIG:-}"
+compilation_config="${COMPILATION_CONFIG:-}"
 max_model_len="${MAX_MODEL_LEN:-100000}"
 gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-0.90}"
 max_num_seqs="${MAX_NUM_SEQS:-8}"
@@ -48,6 +49,7 @@ jq -n \
   --arg candidate_image "$candidate_image" \
   --arg model "$model" \
   --arg attention_config "$attention_config" \
+  --arg compilation_config "$compilation_config" \
   --argjson gpu "$gpu" \
   --argjson host_port "$host_port" \
   --argjson max_model_len "$max_model_len" \
@@ -77,9 +79,13 @@ run_candidate() {
   local endpoint="http://127.0.0.1:$host_port"
   local deadline
   local -a attention_args=()
+  local -a compilation_args=()
 
   if [[ -n "$attention_config" ]]; then
     attention_args=(--attention-config "$attention_config")
+  fi
+  if [[ -n "$compilation_config" ]]; then
+    compilation_args=(--compilation-config "$compilation_config")
   fi
 
   mkdir -p "$candidate_dir" "$cache_dir" "$triton_cache_dir"
@@ -139,7 +145,7 @@ run_candidate() {
     --mm-encoder-tp-mode data --mm-tensor-ipc direct_rpc \
     --mm-processor-cache-type shm --mm-processor-cache-gb 16 \
     --mm-shm-cache-max-object-size-mb 512 --enable-chunked-prefill \
-    --long-prefill-token-threshold 8192 "${attention_args[@]}" >"$candidate_dir/container-id.txt"
+    --long-prefill-token-threshold 8192 "${attention_args[@]}" "${compilation_args[@]}" >"$candidate_dir/container-id.txt"
 
   deadline=$((SECONDS + 1800))
   until curl --fail --silent --show-error --max-time 3 "$endpoint/health" >"$candidate_dir/health.json" 2>>"$candidate_dir/server.log"; do
