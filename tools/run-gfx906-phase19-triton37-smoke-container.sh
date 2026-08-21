@@ -2,9 +2,13 @@
 set -euo pipefail
 
 export PATH="/root/.local/bin:$PATH"
+export UV_NO_MODIFY_PATH=1
+export UV_LINK_MODE=copy
 if ! command -v uv >/dev/null; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path
+  curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
+
+git config --global --add safe.directory /workspace/triton
 
 venv=/artifacts/venv
 if [[ ! -x "$venv/bin/python" ]]; then
