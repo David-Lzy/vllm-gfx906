@@ -30,3 +30,24 @@ own numerical evidence.
 `0002` retains the gfx9 DPP broadcast reduction path already used by the
 validated Triton 3.6 fork. Without it, the newer feature helper directs Vega20
 through an RDNA-only `permlanex16` intrinsic that gfx906 cannot select.
+
+## Build and package gate
+
+Use the Phase 19 scripts to produce a relocatable wheel before putting this
+compiler underneath vLLM. The source checkout and all build artifacts remain
+outside the repository.
+
+```bash
+TRITON_SOURCE_DIR=<patched-triton-3.7.1-source> \
+TRITON_ARTIFACT_ROOT=<external-artifact-root> \
+tools/build-gfx906-phase19-triton37-wheel.sh
+
+TRITON_WHEEL_DIR=<printed-wheel-dir> \
+TRITON_ARTIFACT_ROOT=<external-artifact-root> \
+TRITON_GPU_INDEX=2 \
+tools/run-gfx906-phase19-triton37-wheel-smoke.sh
+```
+
+The second command installs the wheel into a fresh environment and runs the
+gfx906 elementwise, reduction, and FP16 matmul smoke suite. Only a successful
+packaged-wheel smoke may be used as the Triton input for the v0.27 image build.

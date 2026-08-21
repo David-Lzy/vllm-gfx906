@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1.7
+#
+# Phase 19 only: build v0.27.1 against the official PyTorch 2.13 ROCm 7.2
+# wheel and the separately validated Triton 3.7.1 gfx906 wheel. This is a
+# disposable development image, not a production replacement.
+ARG BASE_IMAGE=aiinfos/vllm-gfx906-mobydick:v0.23.1rc0.x-rocm7.2.1-pytorch2.11.0
+FROM ${BASE_IMAGE}
+
+ARG VLLM_BUILD_VERSION=0.27.1+gfx906.phase19.triton37
+ARG VLLM_UPSTREAM_REV=6e448d0ea9
+
+ENV VLLM_TARGET_DEVICE=rocm \
+    PYTORCH_ROCM_ARCH=gfx906 \
+    VLLM_ROCM_USE_AITER=0 \
+    VLLM_USE_PRECOMPILED=0 \
+    VLLM_USE_PRECOMPILED_RUST=0 \
+    CMAKE_BUILD_TYPE=Release \
+    MAX_JOBS=12 \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_BUILD_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/opt/vllm-venv/bin:/root/.cargo/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:${PATH} \
+    VIRTUAL_ENV=/opt/vllm-venv
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.revision="${VLLM_UPSTREAM_REV}" \
+      org.opencontainers.image.description="Phase 19 v0.27.1 Triton 3.7 gfx906 probe; not production"
+
+RUN apt-get update -q -y \
+    && apt-get install -q -y --no-install-recommends \
+        ca-certificates \
+        ccache \
+        curl \
+        libprotobuf-dev \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/install.sh \
+        | env UV_INSTALL_DIR=/usr/local/bin sh \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain 1.95 \
+    && uv --version \
+    && rustc --version \
+    && cargo --version \
+    && protoc --version \
+    && test -f /usr/include/google/protobuf/struct.proto
+
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
+COPY --from=triton-wheel . /opt/triton-wheel
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv --system-site-packages --python /usr/bin/python3 /opt/vllm-venv \
+    && uv pip install --python /opt/vllm-venv/bin/python --upgrade \
+        torch==2.13.0+rocm7.2 torchvision==0.28.0+rocm7.2 \
+        --index-url https://download.pytorch.org/whl/rocm7.2 \
+    && uv pip install --python /opt/vllm-venv/bin/python --upgrade -r requirements/rocm.txt \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps \
+        /opt/triton-wheel/triton-*.whl \
+    && uv pip check --python /opt/vllm-venv/bin/python
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && VLLM_REQUIRE_RUST_FRONTEND=1 /opt/vllm-venv/bin/python setup.py bdist_wheel \
+        --dist-dir /opt/vllm-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps /opt/vllm-wheel/*.whl
+
+RUN /opt/vllm-venv/bin/python - <<'PY'
+import torch
+import torchvision
+import triton
+import vllm
+
+assert torch.version.hip is not None
+assert torch.__version__.startswith("2.13.0")
+assert torchvision.__version__.startswith("0.28.0")
+assert triton.__version__.startswith("3.7.1")
+print(f"vllm={vllm.__version__}")
+print(f"torch={torch.__version__}")
+print(f"hip={torch.version.hip}")
+print(f"triton={triton.__version__}")
+PY
+
+WORKDIR /workspace
+ENTRYPOINT ["vllm"]
+CMD ["--help"]
