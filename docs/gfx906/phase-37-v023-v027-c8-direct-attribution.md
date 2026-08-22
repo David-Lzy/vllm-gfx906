@@ -59,3 +59,12 @@ Do not add another generic HIP GPTQ kernel based only on a historical
 throughput gap. The controlled result shows that v0.27 behavior is
 load-dependent; any recovery must preserve C8 and demonstrate at least a 5%
 end-to-end gain on its intended target.
+
+## Measurement Scope Update
+
+Phase 39 subsequently ran the same image through ordinary HTTP requests with
+torch profiling disabled. It measured about `60 tok/s` fixed-64 C1 completion
+throughput for both automatic ExLlama and explicit gfx906 GPTQ selection.
+Therefore the C1/C8 figures above remain valid as **profiler-harness trace
+attribution**, but their absolute wall-clock values are not a normal serving
+throughput comparison. Future release gates use the two lanes separately.

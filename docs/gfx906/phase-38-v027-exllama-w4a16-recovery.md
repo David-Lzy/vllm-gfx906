@@ -54,3 +54,12 @@ split-KV composition documented in
 cache-hit rate improved from `0.906` to `1.337 tok/s` (+47.6%), with routine
 multimodal and JSON gates passing. The original `0.238 tok/s` geometry result
 was a historical cross-model reference, not the Phase 31 A/B baseline.
+
+## Measurement Scope Update
+
+Phase 39 repeated both v0.27 backend selections with torch profiling disabled.
+Each sustained approximately `60 tok/s` for ordinary fixed-64 C1 HTTP decode;
+the 0.04% difference was noise. The profiler result above remains useful for
+kernel attribution, but it is not sufficient to reject or select a normal
+serving backend by its absolute wall-clock number alone. See
+[Phase 39](phase-39-v027-throughput-measurement-normalization.md).
