@@ -10,6 +10,8 @@ readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phas
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-32}"
 readonly GPU="${GPU:-2}"
 readonly PORT="${PORT:-18079}"
+# Keep an explicitly empty value so older vLLM controls can use auto selection.
+readonly LINEAR_BACKEND="${LINEAR_BACKEND-gfx906_gptq}"
 readonly TORCH_PROFILER_RECORD_SHAPES="${TORCH_PROFILER_RECORD_SHAPES:-false}"
 readonly CONTAINER="vllm-gfx906-phase32-qwen35-c8"
 readonly CACHE_DIR="${ROOT}/cache"
@@ -93,12 +95,17 @@ post_checked() {
 }
 
 start() {
+    local linear_backend_args=()
+
     require_production
     [[ -d "${HF_CACHE_DIR}" && -f "${FIXTURE}" ]] || {
         printf 'HF cache or image fixture is unavailable.\n' >&2
         exit 2
     }
     docker image inspect "${IMAGE}" >/dev/null
+    if [[ -n "${LINEAR_BACKEND}" ]]; then
+        linear_backend_args+=(--linear-backend "${LINEAR_BACKEND}")
+    fi
     docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
     mkdir -p "${CACHE_DIR}/triton-cache" "${CACHE_DIR}/torch-profiler"
     docker run --detach --name "${CONTAINER}" --network host \
@@ -120,7 +127,7 @@ start() {
         'mkdir -p /root/.cache/vllm/torch_compile_cache /root/.cache/vllm/torch_compile_cache/torchinductor /root/.triton/cache; exec nice -n -5 vllm "$@"' \
         vllm-wrapper serve "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
         --served-model-name "${MODEL}" --trust-remote-code --dtype float16 --kv-cache-dtype float16 \
-        --tensor-parallel-size 1 --linear-backend gfx906_gptq --max-model-len 100000 \
+        --tensor-parallel-size 1 "${linear_backend_args[@]}" --max-model-len 100000 \
         --gpu-memory-utilization 0.90 --max-num-seqs 8 --max-num-batched-tokens 32768 \
         --renderer-num-workers 1 --enable-prefix-caching --reasoning-parser qwen3 \
         --default-chat-template-kwargs '{"enable_thinking":false}' \
