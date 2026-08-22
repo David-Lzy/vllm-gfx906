@@ -24,6 +24,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [v0.27 exploration roadmap](roadmap-v027.md)
 - [v0.27 selected-backport report](phase-16-v027-selected-backports.md)
 - [Cost-aware Router evaluation](phase-18-cost-aware-router.md)
+- [Qwen3.8 Hybrid Mamba state-copy tiling screen](phase-57-qwen38-mamba-state-copy-tiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
