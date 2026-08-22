@@ -10,6 +10,7 @@ readonly FIXTURE="${FIXTURE:-/mnt/disk2/vllm-gfx906-build/phase-19/fixtures/phas
 readonly ROOT="${ROOT:-/mnt/disk2/vllm-gfx906-build/phase-32}"
 readonly GPU="${GPU:-2}"
 readonly PORT="${PORT:-18079}"
+readonly TORCH_PROFILER_RECORD_SHAPES="${TORCH_PROFILER_RECORD_SHAPES:-false}"
 readonly CONTAINER="vllm-gfx906-phase32-qwen35-c8"
 readonly CACHE_DIR="${ROOT}/cache"
 readonly RESULT_DIR="${ROOT}/results/$(date -u +%Y%m%dT%H%M%SZ)-qwen35-c8"
@@ -23,6 +24,14 @@ This is an isolated GPU2 experiment. It refuses to run when production port
 8002 is unhealthy and never changes the production service.
 EOF
 }
+
+case "${TORCH_PROFILER_RECORD_SHAPES}" in
+    true|false) ;;
+    *)
+        printf 'TORCH_PROFILER_RECORD_SHAPES must be true or false.\n' >&2
+        exit 2
+        ;;
+esac
 
 require_server() {
     curl --fail --silent --show-error --max-time 10 "${ENDPOINT}/health" >/dev/null
@@ -120,7 +129,7 @@ start() {
         --mm-encoder-tp-mode data --mm-tensor-ipc direct_rpc --mm-processor-cache-type shm \
         --mm-processor-cache-gb 16 --mm-shm-cache-max-object-size-mb 512 \
         --enable-chunked-prefill --long-prefill-token-threshold 8192 \
-        --profiler-config '{"profiler":"torch","torch_profiler_dir":"/root/.cache/vllm/torch-profiler","torch_profiler_with_stack":false,"torch_profiler_use_gzip":false,"torch_profiler_dump_cuda_time_total":true,"ignore_frontend":true}'
+        --profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"/root/.cache/vllm/torch-profiler\",\"torch_profiler_with_stack\":false,\"torch_profiler_record_shapes\":${TORCH_PROFILER_RECORD_SHAPES},\"torch_profiler_use_gzip\":false,\"torch_profiler_dump_cuda_time_total\":true,\"ignore_frontend\":true}"
     wait_for_server
     write_payloads
     curl --fail --silent "${ENDPOINT}/v1/models" | jq . > "${ROOT}/models.json"
