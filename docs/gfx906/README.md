@@ -26,6 +26,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Cost-aware Router evaluation](phase-18-cost-aware-router.md)
 - [Qwen3.8 Hybrid Mamba state-copy tiling screen](phase-57-qwen38-mamba-state-copy-tiling.md)
 - [Qwen3.5 multimodal prefix-cache transport screen](phase-58-qwen35-mm-prefix-cache-transport.md)
+- [Qwen Mamba prefill-checkpoint screen](phase-59-qwen-mamba-prefill-checkpoint-screen.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
