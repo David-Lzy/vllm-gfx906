@@ -14,6 +14,7 @@ max_tokens="${MAX_TOKENS:-64}"
 min_tokens="${MIN_TOKENS:-$max_tokens}"
 c8_requests="${C8_REQUESTS:-8}"
 c8_warmups="${C8_WARMUPS:-1}"
+c8_iterations="${C8_ITERATIONS:-1}"
 
 for command in base64 curl date file jq awk; do
   command -v "$command" >/dev/null || {
@@ -50,10 +51,11 @@ jq -n \
   --argjson max_tokens "$max_tokens" \
   --argjson c8_requests "$c8_requests" \
   --argjson c8_warmups "$c8_warmups" \
+  --argjson c8_iterations "$c8_iterations" \
   '{endpoint: $endpoint, model: $model, test_image: $test_image,
     test_image_mime_type: $mime_type, warmups: $warmups,
     iterations: $iterations, max_tokens: $max_tokens, c8_requests: $c8_requests,
-    c8_warmups: $c8_warmups}' \
+    c8_warmups: $c8_warmups, c8_iterations: $c8_iterations}' \
   >"$result_dir/metadata.json"
 
 jq -n --arg model "$model" --argjson max_tokens "$max_tokens" --argjson min_tokens "$min_tokens" \
@@ -132,7 +134,7 @@ run_c8() {
   local payload="$result_dir/payloads/text.json"
   local started_ns ended_ns elapsed_ms completed=0 failures=0
   local -a pids=()
-  local index pid response tokens warmup
+  local index pid response tokens warmup iteration
   local response_dir warmup_dir
 
   # First use of a concurrent shape can JIT a distinct kernel. Warm it before
@@ -157,48 +159,55 @@ run_c8() {
     done
   done
 
-  response_dir="$result_dir/responses/$scenario"
-  mkdir -p "$response_dir"
+  for ((iteration = 1; iteration <= c8_iterations; iteration++)); do
+    response_dir="$result_dir/responses/${scenario}-measured-${iteration}"
+    mkdir -p "$response_dir"
+    pids=()
+    completed=0
+    failures=0
 
-  started_ns="$(date +%s%N)"
-  for ((index = 1; index <= c8_requests; index++)); do
-    curl --fail --silent --show-error --connect-timeout 10 --max-time 900 \
-      --header 'Content-Type: application/json' \
-      --data-binary "@$payload" \
-      "$endpoint/v1/chat/completions" >"$response_dir/$index.json" &
-    pids+=("$!")
-  done
-  for pid in "${pids[@]}"; do
-    if ! wait "$pid"; then
-      failures=$((failures + 1))
+    started_ns="$(date +%s%N)"
+    for ((index = 1; index <= c8_requests; index++)); do
+      curl --fail --silent --show-error --connect-timeout 10 --max-time 900 \
+        --header 'Content-Type: application/json' \
+        --data-binary "@$payload" \
+        "$endpoint/v1/chat/completions" >"$response_dir/$index.json" &
+      pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do
+      if ! wait "$pid"; then
+        failures=$((failures + 1))
+      fi
+    done
+    ended_ns="$(date +%s%N)"
+
+    for ((index = 1; index <= c8_requests; index++)); do
+      response="$response_dir/$index.json"
+      if [[ ! -s "$response" ]] || ! jq -er '.choices[0].message.content | strings | select(length > 0)' "$response" >/dev/null; then
+        failures=$((failures + 1))
+        continue
+      fi
+      tokens="$(jq -er '.usage.completion_tokens // 0' "$response")"
+      completed=$((completed + tokens))
+    done
+    elapsed_ms="$(awk -v start="$started_ns" -v end="$ended_ns" 'BEGIN { printf "%.6f", (end - start) / 1000000 }')"
+    if (( failures > 0 )); then
+      printf 'C8 benchmark had %s failed responses in iteration %s.\n' "$failures" "$iteration" >&2
+      exit 1
     fi
-  done
-  ended_ns="$(date +%s%N)"
 
-  for ((index = 1; index <= c8_requests; index++)); do
-    response="$response_dir/$index.json"
-    if [[ ! -s "$response" ]] || ! jq -er '.choices[0].message.content | strings | select(length > 0)' "$response" >/dev/null; then
-      failures=$((failures + 1))
-      continue
-    fi
-    tokens="$(jq -er '.usage.completion_tokens // 0' "$response")"
-    completed=$((completed + tokens))
+    jq -cn \
+      --arg scenario "$scenario" \
+      --argjson iteration "$iteration" \
+      --argjson requests "$c8_requests" \
+      --argjson elapsed_ms "$elapsed_ms" \
+      --argjson completion_tokens "$completed" \
+      '{scenario: $scenario, phase: "measured", iteration: $iteration,
+        requests: $requests, elapsed_ms: $elapsed_ms,
+        completion_tokens: $completion_tokens,
+        completion_tokens_per_second: (if $elapsed_ms > 0 then $completion_tokens / ($elapsed_ms / 1000) else null end)}' \
+      >>"$records"
   done
-  elapsed_ms="$(awk -v start="$started_ns" -v end="$ended_ns" 'BEGIN { printf "%.6f", (end - start) / 1000000 }')"
-  if (( failures > 0 )); then
-    printf 'C8 benchmark had %s failed responses.\n' "$failures" >&2
-    exit 1
-  fi
-
-  jq -cn \
-    --arg scenario "$scenario" \
-    --argjson requests "$c8_requests" \
-    --argjson elapsed_ms "$elapsed_ms" \
-    --argjson completion_tokens "$completed" \
-    '{scenario: $scenario, phase: "measured", requests: $requests,
-      elapsed_ms: $elapsed_ms, completion_tokens: $completion_tokens,
-      completion_tokens_per_second: (if $elapsed_ms > 0 then $completion_tokens / ($elapsed_ms / 1000) else null end)}' \
-    >>"$records"
 }
 
 run_json() {
@@ -227,19 +236,21 @@ if awk '/vllm:num_requests_(running|waiting)/ && ($NF + 0) > 0 { found = 1 } END
 fi
 
 jq -s '
+  def p95: sort | .[((length - 1) * 0.95 | ceil)];
   [group_by(.scenario)[]
    | {scenario: .[0].scenario,
       samples: length,
       measured_samples: ([.[] | select(.phase == "measured")] | length),
       median_elapsed_ms: ([.[] | select(.phase == "measured") | .elapsed_ms] | sort | .[(length / 2 | floor)]),
+      p95_elapsed_ms: ([.[] | select(.phase == "measured") | .elapsed_ms] | p95),
       median_completion_tokens_per_second: ([.[] | select(.phase == "measured") | .completion_tokens_per_second] | sort | .[(length / 2 | floor)])}]
 ' "$records" >"$result_dir/summary.json"
 
 {
   printf '# Small Multimodal Parity Benchmark\n\n'
   printf -- '- Endpoint: `%s`\n- Model: `%s`\n- Fixture: `%s`\n\n' "$endpoint" "$model" "$test_image"
-  printf '| Scenario | Samples | Median latency ms | Completion tok/s |\n| --- | ---: | ---: | ---: |\n'
-  jq -r '.[] | "| \(.scenario) | \(.measured_samples) | \(.median_elapsed_ms // 0 | tostring) | \(.median_completion_tokens_per_second // 0 | tostring) |"' \
+  printf '| Scenario | Samples | Median latency ms | P95 latency ms | Completion tok/s |\n| --- | ---: | ---: | ---: | ---: |\n'
+  jq -r '.[] | "| \(.scenario) | \(.measured_samples) | \(.median_elapsed_ms // 0 | tostring) | \(.p95_elapsed_ms // 0 | tostring) | \(.median_completion_tokens_per_second // 0 | tostring) |"' \
     "$result_dir/summary.json"
   printf '\nJSON constrained output: 3/3 passed.\n'
 } >"$result_dir/summary.md"

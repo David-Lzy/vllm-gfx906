@@ -3,10 +3,10 @@
 ## Why This Phase Exists
 
 The historical `0.238 tok/s` value was being interpreted as a general v0.27
-gfx906 serving rate. It was not: it was a Qwen3.8 27B long-context,
-cross-model geometry reference. It must not be compared with ordinary short
-HTTP decode or with the wall time of a request that has torch profiling
-enabled.
+gfx906 serving rate. It was not: it was the Qwen3.6 27B AWQ long-context
+control used as a cross-model geometry reference while investigating Qwen3.8.
+It must not be compared with ordinary short HTTP decode or with the wall time
+of a request that has torch profiling enabled.
 
 Phase 31 already addressed the actual Qwen3.8 long-context failure. With the
 same Qwen3.8 checkpoint and a 32K cache-hit prefix, explicit gfx906 GPTQ plus
