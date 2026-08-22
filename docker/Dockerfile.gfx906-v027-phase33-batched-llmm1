@@ -1,0 +1,27 @@
+# Phase 33 rebuilds only the native extension after adding a fused four-row
+# gfx906 decode kernel. It is a disposable development image.
+FROM local/vllm-gfx906:v0.27.1-phase28-gptq-wna16
+
+COPY csrc/rocm/skinny_gemms.cu /workspace/vllm/csrc/rocm/skinny_gemms.cu
+COPY csrc/rocm/ops.h /workspace/vllm/csrc/rocm/ops.h
+COPY csrc/rocm/torch_bindings.cpp /workspace/vllm/csrc/rocm/torch_bindings.cpp
+COPY vllm/_custom_ops.py /workspace/vllm/vllm/_custom_ops.py
+COPY vllm/model_executor/layers/utils.py /workspace/vllm/vllm/model_executor/layers/utils.py
+COPY vllm/config/kernel.py /workspace/vllm/vllm/config/kernel.py
+COPY vllm/model_executor/kernels/linear/__init__.py /workspace/vllm/vllm/model_executor/kernels/linear/__init__.py
+COPY vllm/model_executor/kernels/linear/mixed_precision/__init__.py /workspace/vllm/vllm/model_executor/kernels/linear/mixed_precision/__init__.py
+COPY vllm/model_executor/kernels/linear/mixed_precision/gfx906_gptq_wna16.py /workspace/vllm/vllm/model_executor/kernels/linear/mixed_precision/gfx906_gptq_wna16.py
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && cd /workspace/vllm \
+    && VLLM_REQUIRE_RUST_FRONTEND=1 /opt/vllm-venv/bin/python setup.py bdist_wheel \
+        --dist-dir /opt/vllm-phase33-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps --force-reinstall \
+        /opt/vllm-phase33-wheel/*.whl
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.description="Phase 33 gfx906 fused batched decode experiment; not production"

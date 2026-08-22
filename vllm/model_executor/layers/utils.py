@@ -193,6 +193,19 @@ def rocm_unquantized_gemm_impl(
         if on_gfx906() and m % 4 == 0 and n == 1 and k <= 8192 and bias is None:
             out = ops.LLMM1(weight, x_view, 4)
             return out.reshape(*x.shape[:-1], weight.shape[0])
+        if (
+            on_gfx906()
+            and m % 4 == 0
+            and 1 < n <= 8
+            and k <= 8192
+            and bias is None
+            # The fused B4 kernel wins for Qwen's 4096-wide projections and
+            # large vocabulary heads. Its register pressure loses to rocBLAS
+            # for the 12288-wide MLP gate/up projection at N=5..8.
+            and (n <= 4 or m <= 8192 or m >= 65536)
+        ):
+            out = ops.LLMMB4(weight, x_view)
+            return out.reshape(*x.shape[:-1], weight.shape[0])
         if m > 8 and 0 < n <= 5 and (on_gfx9() or on_gfx1x()):
             cu_count = num_compute_units()
             out = ops.wvSplitK(weight, x_view, cu_count, bias)

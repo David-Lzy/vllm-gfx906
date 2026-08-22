@@ -68,8 +68,9 @@ def test_rocm_unquantized_gemm_gfx906_llmm1_path(monkeypatch):
     assert torch.allclose(out, ref, atol=1e-3, rtol=1e-3)
 
 
-def test_rocm_unquantized_gemm_gfx906_multiple_tokens_fall_back(monkeypatch):
-    x = torch.randn(2, 64, dtype=torch.float16)
+@pytest.mark.parametrize("num_tokens", [2, 4, 8])
+def test_rocm_unquantized_gemm_gfx906_batched_llmmb4_path(monkeypatch, num_tokens):
+    x = torch.randn(num_tokens, 64, dtype=torch.float16)
     weight = torch.randn(128, 64, dtype=torch.float16)
 
     monkeypatch.setattr(utils, "use_aiter_triton_gemm", lambda *args: False)
@@ -84,12 +85,41 @@ def test_rocm_unquantized_gemm_gfx906_multiple_tokens_fall_back(monkeypatch):
     monkeypatch.setattr(utils.ops, "wvSplitK", wvsplitk_mock)
     llmm1_mock = MagicMock()
     monkeypatch.setattr(utils.ops, "LLMM1", llmm1_mock)
+    llmmb4_mock = MagicMock(side_effect=lambda w, x_view: x_view @ w.t())
+    monkeypatch.setattr(utils.ops, "LLMMB4", llmmb4_mock)
 
     out = utils.rocm_unquantized_gemm_impl(x, weight, None)
     ref = torch.nn.functional.linear(x, weight, None)
 
     llmm1_mock.assert_not_called()
+    llmmb4_mock.assert_called_once()
     wvsplitk_mock.assert_not_called()
+    assert torch.allclose(out, ref, atol=1e-3, rtol=1e-3)
+
+
+def test_rocm_unquantized_gemm_gfx906_batched_llmmb4_skips_slow_mlp_shape(
+    monkeypatch,
+):
+    # MI50 measurements show that B4 loses to rocBLAS for Qwen's 12288-wide
+    # gate/up projection at N=8. Keep this route out of the fused dispatch.
+    x = torch.randn(8, 64, dtype=torch.float16)
+    weight = torch.randn(12288, 64, dtype=torch.float16)
+
+    monkeypatch.setattr(utils, "use_aiter_triton_gemm", lambda *args: False)
+    monkeypatch.setattr(utils.envs, "VLLM_ROCM_USE_SKINNY_GEMM", True)
+    monkeypatch.setattr("vllm.platforms.rocm.on_gfx1x", lambda: False)
+    monkeypatch.setattr("vllm.platforms.rocm.on_gfx9", lambda: False)
+    monkeypatch.setattr("vllm.platforms.rocm.on_gfx906", lambda: True)
+    monkeypatch.setattr("vllm.platforms.rocm.on_gfx950", lambda: False)
+    monkeypatch.setattr("vllm.platforms.rocm.on_gfx1250", lambda: False)
+
+    llmmb4_mock = MagicMock()
+    monkeypatch.setattr(utils.ops, "LLMMB4", llmmb4_mock)
+
+    out = utils.rocm_unquantized_gemm_impl(x, weight, None)
+    ref = torch.nn.functional.linear(x, weight, None)
+
+    llmmb4_mock.assert_not_called()
     assert torch.allclose(out, ref, atol=1e-3, rtol=1e-3)
 
 

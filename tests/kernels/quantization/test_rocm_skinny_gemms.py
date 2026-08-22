@@ -28,6 +28,12 @@ NKM_FACTORS_LLMM1 = [
     (1, 4096, 8192),
 ]
 
+NKM_FACTORS_LLMMB4 = [
+    (2, 128, 256),
+    (4, 512, 1024),
+    (8, 4096, 8192),
+]
+
 NKM_FACTORS_WVSPLITK = [
     # Different batch sizes with key dimensions
     (1, 32, 16),
@@ -193,6 +199,22 @@ def test_rocm_llmm1_kernel(n, k, m, dtype, rows_per_block, seed):
 
     ref_out = torch.matmul(A, B.t())
     out = ops.LLMM1(B, A, rows_per_block)
+
+    torch.testing.assert_close(out, ref_out, atol=1e-8, rtol=1e-2)
+
+
+@pytest.mark.parametrize("n,k,m", NKM_FACTORS_LLMMB4)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.skipif(not current_platform.is_rocm(), reason="only test for rocm")
+@torch.inference_mode()
+def test_rocm_llmmb4_kernel(n, k, m, dtype, seed):
+    torch.manual_seed(seed)
+    A = torch.rand(n, k, dtype=dtype, device="cuda")
+    B = torch.rand(m, k, dtype=dtype, device="cuda")
+
+    ref_out = torch.matmul(A, B.t())
+    out = ops.LLMMB4(B, A)
 
     torch.testing.assert_close(out, ref_out, atol=1e-8, rtol=1e-2)
 
