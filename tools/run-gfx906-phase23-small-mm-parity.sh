@@ -20,6 +20,9 @@ candidate_label="${CANDIDATE_LABEL:-v0.27}"
 candidate_runner_label="${CANDIDATE_RUNNER_LABEL:-candidate_v027}"
 baseline_linear_backend="${BASELINE_LINEAR_BACKEND:-}"
 candidate_linear_backend="${CANDIDATE_LINEAR_BACKEND:-}"
+candidate_disable_async_scheduling="${CANDIDATE_DISABLE_ASYNC_SCHEDULING:-0}"
+candidate_estimate_cudagraphs="${CANDIDATE_ESTIMATE_CUDAGRAPHS:-}"
+candidate_compilation_config="${CANDIDATE_COMPILATION_CONFIG:-}"
 attention_config="${ATTENTION_CONFIG:-}"
 compilation_config="${COMPILATION_CONFIG:-}"
 aot_compile="${VLLM_USE_AOT_COMPILE:-}"
@@ -41,6 +44,18 @@ if [[ ! -d "$hf_cache_dir" || ! -f "$test_image" ]]; then
   printf 'HF_CACHE_DIR or TEST_IMAGE is unavailable.\n' >&2
   exit 2
 fi
+if [[ "$candidate_disable_async_scheduling" != "0" && "$candidate_disable_async_scheduling" != "1" ]]; then
+  printf 'CANDIDATE_DISABLE_ASYNC_SCHEDULING must be 0 or 1.\n' >&2
+  exit 2
+fi
+if [[ -n "$candidate_estimate_cudagraphs" && "$candidate_estimate_cudagraphs" != "0" && "$candidate_estimate_cudagraphs" != "1" ]]; then
+  printf 'CANDIDATE_ESTIMATE_CUDAGRAPHS must be empty, 0, or 1.\n' >&2
+  exit 2
+fi
+if [[ -n "$candidate_compilation_config" ]] && ! jq -e . >/dev/null <<<"$candidate_compilation_config"; then
+  printf 'CANDIDATE_COMPILATION_CONFIG must be valid JSON.\n' >&2
+  exit 2
+fi
 if ! curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8002/health >/dev/null; then
   printf 'Production health check failed; refusing to begin isolated comparison.\n' >&2
   exit 2
@@ -60,6 +75,9 @@ jq -n \
   --arg candidate_runner_label "$candidate_runner_label" \
   --arg baseline_linear_backend "$baseline_linear_backend" \
   --arg candidate_linear_backend "$candidate_linear_backend" \
+  --arg candidate_disable_async_scheduling "$candidate_disable_async_scheduling" \
+  --arg candidate_estimate_cudagraphs "$candidate_estimate_cudagraphs" \
+  --arg candidate_compilation_config "$candidate_compilation_config" \
   --arg attention_config "$attention_config" \
   --arg compilation_config "$compilation_config" \
   --arg aot_compile "$aot_compile" \
@@ -75,6 +93,9 @@ jq -n \
     candidate_runner_label: $candidate_runner_label,
     baseline_linear_backend: $baseline_linear_backend,
     candidate_linear_backend: $candidate_linear_backend,
+    candidate_disable_async_scheduling: $candidate_disable_async_scheduling,
+    candidate_estimate_cudagraphs: $candidate_estimate_cudagraphs,
+    candidate_compilation_config: $candidate_compilation_config,
     attention_config: $attention_config,
     compilation_config: $compilation_config, aot_compile: $aot_compile,
     mega_aot_artifact: $mega_aot_artifact,
@@ -102,9 +123,12 @@ run_candidate() {
   local deadline
   local -a attention_args=()
   local -a compilation_args=()
+  local -a candidate_compilation_args=()
   local -a aot_compile_env=()
   local -a mega_aot_artifact_env=()
   local -a linear_args=()
+  local -a scheduler_args=()
+  local -a graph_memory_env=()
 
   if [[ -n "$linear_backend" ]]; then
     case "$linear_backend" in
@@ -127,6 +151,17 @@ run_candidate() {
   fi
   if [[ -n "$mega_aot_artifact" ]]; then
     mega_aot_artifact_env=(--env "VLLM_USE_MEGA_AOT_ARTIFACT=$mega_aot_artifact")
+  fi
+  if [[ "$label" == "$candidate_runner_label" ]]; then
+    if [[ "$candidate_disable_async_scheduling" == "1" ]]; then
+      scheduler_args=(--no-async-scheduling)
+    fi
+    if [[ -n "$candidate_estimate_cudagraphs" ]]; then
+      graph_memory_env=(--env "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=$candidate_estimate_cudagraphs")
+    fi
+    if [[ -n "$candidate_compilation_config" ]]; then
+      candidate_compilation_args=(--compilation-config "$candidate_compilation_config")
+    fi
   fi
 
   mkdir -p "$candidate_dir" "$cache_dir" "$triton_cache_dir"
@@ -170,6 +205,7 @@ run_candidate() {
     --env VLLM_ROCM_GFX906_PREFER_EXLLAMA=1 \
     "${aot_compile_env[@]}" \
     "${mega_aot_artifact_env[@]}" \
+    "${graph_memory_env[@]}" \
     --env PROCESS_NICE=-5 \
     --env TRITON_CACHE_DIR=/root/.triton/cache \
     --env TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torch_compile_cache/torchinductor \
@@ -188,7 +224,7 @@ run_candidate() {
     --mm-encoder-tp-mode data --mm-tensor-ipc direct_rpc \
     --mm-processor-cache-type shm --mm-processor-cache-gb 16 \
     --mm-shm-cache-max-object-size-mb 512 --enable-chunked-prefill \
-    --long-prefill-token-threshold 8192 "${attention_args[@]}" "${compilation_args[@]}" >"$candidate_dir/container-id.txt"
+    --long-prefill-token-threshold 8192 "${scheduler_args[@]}" "${attention_args[@]}" "${compilation_args[@]}" "${candidate_compilation_args[@]}" >"$candidate_dir/container-id.txt"
 
   deadline=$((SECONDS + 1800))
   until curl --fail --silent --show-error --max-time 3 "$endpoint/health" >"$candidate_dir/health.json" 2>>"$candidate_dir/server.log"; do

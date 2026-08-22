@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1.7
+#
+# Phase 43: keep the v0.27.1 gfx906 source and validated Triton 3.6 runtime,
+# but rebuild the native wheel against the retained PyTorch 2.11 ROCm 7.2
+# graph runtime. This isolates the only material runtime delta left after the
+# v0.23/v0.27 C8 profiler comparison. It is a development image only.
+ARG BASE_IMAGE=aiinfos/vllm-gfx906-mobydick:v0.23.1rc0.x-rocm7.2.1-pytorch2.11.0
+FROM ${BASE_IMAGE}
+
+ARG VLLM_BUILD_VERSION=0.27.1+gfx906.phase43.pytorch211
+ARG VLLM_UPSTREAM_REV=6e448d0ea9
+
+ENV VLLM_TARGET_DEVICE=rocm \
+    PYTORCH_ROCM_ARCH=gfx906 \
+    VLLM_ROCM_USE_AITER=0 \
+    VLLM_USE_PRECOMPILED=0 \
+    VLLM_USE_PRECOMPILED_RUST=0 \
+    CMAKE_BUILD_TYPE=Release \
+    MAX_JOBS=12 \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_BUILD_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/opt/vllm-venv/bin:/root/.cargo/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:${PATH} \
+    VIRTUAL_ENV=/opt/vllm-venv \
+    ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.revision="${VLLM_UPSTREAM_REV}" \
+      org.opencontainers.image.description="Phase 43 v0.27.1 with PyTorch 2.11 HIP graph runtime; not production"
+
+RUN apt-get update -q -y \
+    && apt-get install -q -y --no-install-recommends \
+        ca-certificates \
+        ccache \
+        curl \
+        libprotobuf-dev \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh \
+        -o /tmp/uv-install.sh \
+    && head -1 /tmp/uv-install.sh | grep -q '^#!' \
+    && env UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
+    && rm -f /tmp/uv-install.sh \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain 1.95 \
+    && uv --version \
+    && rustc --version \
+    && cargo --version \
+    && protoc --version \
+    && test -f /usr/include/google/protobuf/struct.proto
+
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
+
+# The base image supplies the matching ROCm 7.2 PyTorch 2.11 and Triton 3.6.
+# Installing the normal v0.27 runtime requirements would let its resolver pull
+# a CUDA Torch/Triton stack, so this probe installs only native-wheel build
+# prerequisites. The retained image already imports this v0.27 source tree
+# with its Qwen3.5 multimodal dependency set.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv --system-site-packages --python /usr/bin/python /opt/vllm-venv \
+    && uv pip install --python /opt/vllm-venv/bin/python --upgrade \
+        'cmake>=3.26.1,<4' \
+        'packaging>=24.2' \
+        'setuptools>=77.0.3,<80.0.0' \
+        'setuptools-scm>=8' \
+        'setuptools-rust>=1.9.0' \
+        wheel \
+        jinja2 \
+        ninja \
+    && /opt/vllm-venv/bin/python -c 'import torch, triton; assert torch.__version__.startswith("2.11"); assert triton.__version__.startswith("3.6")'
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && VLLM_REQUIRE_RUST_FRONTEND=1 /opt/vllm-venv/bin/python setup.py bdist_wheel \
+        --dist-dir /opt/vllm-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps --force-reinstall \
+        /opt/vllm-wheel/*.whl
+
+RUN /opt/vllm-venv/bin/python -c 'import torch, triton, vllm; assert torch.version.hip is not None; assert torch.__version__.startswith("2.11"); assert triton.__version__.startswith("3.6"); print(f"vllm={vllm.__version__}"); print(f"torch={torch.__version__}"); print(f"hip={torch.version.hip}"); print(f"triton={triton.__version__}")'
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/vllm-venv/bin/vllm"]
+CMD ["--help"]

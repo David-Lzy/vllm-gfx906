@@ -158,7 +158,9 @@ capture_profile() {
         for index in "${pids[@]}"; do wait "${index}"; done
         pids=()
     fi
-    rm -rf --one-file-system "${CACHE_DIR}/torch-profiler"/*
+    # Retain the cache root and clear only the previous trace contents. This
+    # keeps phase storage scoped while avoiding a broad recursive removal.
+    find "${CACHE_DIR}/torch-profiler" -mindepth 1 -depth -delete
     curl --fail --silent --show-error -X POST "${ENDPOINT}/start_profile" > "${dir}/start-profile.json"
     started="$(date +%s%N)"
     for ((index = 1; index <= concurrent; index++)); do
@@ -226,7 +228,7 @@ stop() {
 
 cleanup() {
     stop
-    rm -rf --one-file-system "${CACHE_DIR}"
+    [[ -d "${CACHE_DIR}" ]] && find "${CACHE_DIR}" -depth -delete
 }
 
 run() {

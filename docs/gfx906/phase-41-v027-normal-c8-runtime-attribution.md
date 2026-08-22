@@ -45,3 +45,42 @@ Retain only a candidate that raises normal C8 by at least five percent with no
 C1/multimodal regression, no HTTP 5xx, OOM, xgrammar/FSM, RCCL/NCCL fatal, or
 non-idle final metrics. Production promotion remains gated on the 95% v0.23
 floor in every routine scenario.
+
+## Result: Stable Regression, Not Backend Selection
+
+The repeated ordinary-HTTP lane completed on GPU2 with the production model,
+FP16 KV cache, 100K maximum context, eight sequences, and the same C8 payload.
+Every run passed text, one/two 256px image, and JSON `3/3` gates. The final
+metrics were idle and the fatal-log scans were empty.
+
+| Candidate | C8 per-round completion tok/s | C8 median | Relative to v0.23 |
+| --- | --- | ---: | ---: |
+| v0.23 automatic selection | 66.31, 218.15, 216.79, 214.51, 216.70 | 216.70 | 100.0% |
+| v0.27 explicit `gfx906_gptq` | 158.44, 158.13, 157.90, 157.33, 157.70 | 157.90 | 72.86% |
+| v0.27 automatic ExLlama | 157.70, 157.55, 157.36, 157.57, 157.46 | 157.55 | 72.70% |
+
+The v0.23 first round was a one-off post-warmup residual. Its following four
+rounds were 214.51--218.15 tok/s and its five-round median remains 216.70
+tok/s. Both v0.27 selections were tightly clustered. The ordinary serving
+regression is therefore stable at about 27.1--27.3%, rather than a sampling or
+router artifact.
+
+Automatic ExLlama is 0.22% below the explicit gfx906 GPTQ selection, which is
+well within noise and does not meet the five-percent retention gate. This
+closes the backend-selector branch on MI50. The corresponding C1 and
+multimodal results are also below v0.23: explicit GPTQ retained 79.6% text C1,
+83.4% one-image C1, and 82.1% two-image C1. Production remains on v0.23.
+
+The next bounded task is Phase 42: collect comparable old/new C8 kernel traces
+with shape metadata, then modify only the largest measured execution category.
+The Phase 32/35 evidence already indicates that native GPTQ W4A16 is material,
+but it does not explain the old/new runtime delta by itself.
+
+## Evidence
+
+Raw results are excluded from Git and retained under:
+
+- `phase-41/results/20260822T045716Z-small-mm-parity` for v0.23 versus explicit
+  gfx906 GPTQ;
+- `phase-41/results/20260822T052523Z-small-mm-parity` for v0.23 versus
+  automatic ExLlama.
