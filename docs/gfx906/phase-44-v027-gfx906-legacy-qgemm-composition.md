@@ -37,8 +37,9 @@ configuration rather than silently selecting the legacy implementation.
 
 The candidate is built from the validated Phase 43 PyTorch 2.11 diagnostic
 base. It uses an isolated image, cache, port, and GPU2. It never mounts or
-modifies production Compose, port 8002, GPU0/GPU1, Router, or the production
-model cache.
+modifies production Compose, port 8002, GPU0/GPU1, or Router. The existing
+model snapshot is mounted read-only, so it cannot change production weights or
+the Hugging Face cache.
 
 ## Measurement Order
 
@@ -54,6 +55,43 @@ model cache.
 5. Record final `running=0` and `waiting=0`, then scan logs for fatal
    signatures before removing the temporary worker.
 
+## Result
+
+The option built successfully in a ROCm 7.2, PyTorch 2.11, Triton 3.6 image
+and selected the explicit `Gfx906GPTQWNA16LinearKernel` on GPU2. The temporary
+worker preserved the production-serving contract: Qwen3.5 9B AWQ, 100K context,
+64-image limit, float16 KV cache, chunked prefill, one/two 256px image gates,
+and JSON `3/3`. It never used GPU0/GPU1, port 8002, or Router, and it mounted
+the shared model snapshot read-only.
+
+The architecture restriction was also exercised directly: configuring the
+same source with `VLLM_GPU_ARCHES=gfx90a` and
+`VLLM_GFX906_LEGACY_QGEMM=ON` failed at CMake configuration with the intended
+single-gfx906 diagnostic. The option therefore fails closed outside MI50's
+target ISA.
+
+| Measurement | Phase 43 control | Legacy composition | Change |
+| --- | ---: | ---: | ---: |
+| Actual-weight M=8 `mlp_gate_up` | 0.445 ms | 0.200 ms | +122.4% |
+| Actual-weight M=8 `mlp_down` | 0.276 ms | 0.135 ms | +104.0% |
+| Actual-weight M=8 `mlp_gate` | 0.246 ms | 0.131 ms | +87.3% |
+| Fixed-64 C1 | 58.13 tok/s | 71.12 tok/s | +22.3% |
+| Fixed-64 C8 profile run | 161.20 tok/s | 231.78 tok/s | +43.8% |
+| Fixed-64 C8, five HTTP rounds | n/a | 237.28 tok/s median | +9.5% vs v0.23 |
+
+The five C8 rounds measured `201.70`, `239.51`, `234.69`, `238.87`, and
+`237.28 tok/s`; the lower first round is a warm remainder, while the following
+four stayed within 2.1%. The v0.23 production reference is `216.703 tok/s`,
+so the warmed candidate clears the 95% release-consideration floor and exceeds
+the old C8 reference by 9.5%. The GPTQ repeat deltas stayed within the expected
+non-bitwise-deterministic K-split range, and all API outputs were non-empty and
+semantically valid. Final request metrics were `running=0`, `waiting=0`; no
+OOM, HTTP 5xx, xgrammar/FSM, RCCL/NCCL fatal, or traceback signature occurred.
+
+Raw build, microbenchmark, server, and HTTP-repeat evidence is retained outside
+Git under the Phase 44 build root. The temporary service was removed after the
+gates; production remained healthy and unchanged.
+
 ## Retention Gates
 
 - The complete QGEMM candidate must preserve numerical tolerance on every
@@ -65,6 +103,14 @@ model cache.
   v0.23 C8 reference.
 - Reject on build/import failure, output mismatch, HTTP 5xx, OOM,
   xgrammar/FSM, RCCL/NCCL fatal, traceback, or residual running/waiting work.
+
+## Decision
+
+Retain the default-off, gfx906-only option as the first v0.27 candidate that
+recovers the ordinary Qwen3.5 AWQ C8 regression. It is eligible for the later
+TP1x2 Router canary comparison, but it is not a production promotion by itself:
+that comparison must still use the production topology, workload, rollback
+checklist, and soak gate.
 
 ## Community Boundaries
 

@@ -51,6 +51,17 @@ __forceinline__ __device__ int exb(const uint32_t q1, const uint32_t q0,
   return (int)(__funnelshift_rc(q0, q1, shift) & mask);
 }
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+__forceinline__ __device__ uint32_t bfi(const uint32_t s0, const uint32_t s1,
+                                        const uint32_t s2) {
+  uint32_t result;
+  __asm__("  v_bfi_b32  %0, %1, %2, %3  \n"
+          : "=v"(result)
+          : "v"(s0), "v"(s1), "v"(s2));
+  return result;
+}
+#endif
+
 }  // namespace gptq
 }  // namespace vllm
 #endif

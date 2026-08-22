@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+#
+# Phase 44: rebuild the validated Phase 43 runtime with the optional,
+# gfx906-only legacy GPTQ composition. This is a development image only.
+ARG BASE_IMAGE=local/vllm-gfx906:v0.27.1-phase43-pytorch211
+FROM ${BASE_IMAGE}
+
+ARG VLLM_BUILD_VERSION=0.27.1+gfx906.phase44.legacyqgemm
+ARG VLLM_UPSTREAM_REV=6e448d0ea9
+
+ENV VLLM_TARGET_DEVICE=rocm \
+    PYTORCH_ROCM_ARCH=gfx906 \
+    VLLM_ROCM_USE_AITER=0 \
+    VLLM_USE_PRECOMPILED=0 \
+    VLLM_USE_PRECOMPILED_RUST=0 \
+    CMAKE_BUILD_TYPE=Release \
+    MAX_JOBS=12 \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_BUILD_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/opt/vllm-venv/bin:/root/.cargo/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:${PATH} \
+    VIRTUAL_ENV=/opt/vllm-venv \
+    ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.revision="${VLLM_UPSTREAM_REV}" \
+      org.opencontainers.image.description="Phase 44 gfx906 legacy QGEMM/QDQ candidate; not production"
+
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && rm -f /opt/vllm-wheel/vllm-*.whl \
+    && CMAKE_ARGS=-DVLLM_GFX906_LEGACY_QGEMM=ON \
+        VLLM_REQUIRE_RUST_FRONTEND=1 /opt/vllm-venv/bin/python setup.py bdist_wheel \
+          --dist-dir /opt/vllm-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps --force-reinstall \
+        /opt/vllm-wheel/*.whl
+
+RUN /opt/vllm-venv/bin/python -c 'import torch, triton, vllm; assert torch.version.hip is not None; assert torch.__version__.startswith("2.11"); assert triton.__version__.startswith("3.6"); print(f"vllm={vllm.__version__}"); print(f"torch={torch.__version__}"); print(f"hip={torch.version.hip}"); print(f"triton={triton.__version__}")'
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/vllm-venv/bin/vllm"]
+CMD ["--help"]

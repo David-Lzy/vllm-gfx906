@@ -21,11 +21,19 @@ https://github.com/qwopqwop200/GPTQ-for-LLaMa
 namespace vllm {
 namespace gptq {
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+#define BLOCK_KN_SIZE 256
+#define MAX_Q_GEMM_ROWS 32
+#define MAX_Q_GEMM_ROWS_8BIT 32
+#define VLLM_GPTQ_LAUNCH_BOUNDS __launch_bounds__(BLOCK_KN_SIZE)
+#else
 #define BLOCK_KN_SIZE 128
-#define BLOCK_M_SIZE_MAX 8
-#define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define MAX_Q_GEMM_ROWS 50
 #define MAX_Q_GEMM_ROWS_8BIT 24
+#define VLLM_GPTQ_LAUNCH_BOUNDS
+#endif
+#define BLOCK_M_SIZE_MAX 8
+#define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define MAX_ALT_GEMM_ROWS 8
 #define THREADS_X 32
 #define THREADS_Y 32
@@ -52,6 +60,18 @@ __host__ __forceinline__ hipblasStatus_t __compat_hipblasHgemm(
   #define rocblas_hgemm __compat_hipblasHgemm
 #endif
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+__forceinline__ __device__ float dot22_8_f(half2 (&dq)[4],
+                                           const half* a_ptr) {
+  float result = {};
+  const half2* a2_ptr = (const half2*)a_ptr;
+#pragma unroll
+  for (int i = 0; i < 4; i++) {
+    result = __ockl_fdot2(dq[i], *a2_ptr++, result, true);
+  }
+  return result;
+}
+#else
 __forceinline__ __device__ half2 dot22_8(half2 (&dq)[4], const half* a_ptr,
                                          const half2 g_result) {
   half2 result = {};
@@ -157,6 +177,7 @@ __forceinline__ __device__ half dot22_8_h(half2 (&dq)[4], const half* a_ptr,
   half result_h = __float2half_rn(result);
   return __hadd(result_h, g_result);
 }
+#endif
 
 __forceinline__ __device__ half dot22_16_h(half2 (&dq)[8], const half* a_ptr,
                                            const half g_result,
@@ -187,6 +208,7 @@ typedef void (*fp_gemm_half_q_half_gptq_kernel)(const half*, const uint32_t*,
                                                 const bool, const int*);
 
 template <bool first_block, int m_count>
+VLLM_GPTQ_LAUNCH_BOUNDS
 __global__ void gemm_half_q_half_gptq_4bit_kernel(
     const half* __restrict__ a, const uint32_t* __restrict__ b_q_weight,
     const uint32_t* __restrict__ b_gptq_qzeros,
@@ -231,6 +253,14 @@ __global__ void gemm_half_q_half_gptq_4bit_kernel(
 
   // Zero output
   if (n >= size_n) return;
+
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < m_count; m++) {
+      *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
+    }
+  }
+#endif
 
   __syncthreads();
 
@@ -366,6 +396,14 @@ __global__ void gemm_half_q_half_gptq_2bit_kernel(
   // Zero output
   if (n >= size_n) return;
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < m_count; m++) {
+      *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
+    }
+  }
+#endif
+
   __syncthreads();
 
   // Find initial group
@@ -438,6 +476,7 @@ __global__ void gemm_half_q_half_gptq_2bit_kernel(
 }
 
 template <bool first_block, int m_count>
+VLLM_GPTQ_LAUNCH_BOUNDS
 __global__ void gemm_half_q_half_gptq_3bit_kernel(
     const half* __restrict__ a, const uint32_t* __restrict__ b_q_weight,
     const uint32_t* __restrict__ b_gptq_qzeros,
@@ -482,6 +521,14 @@ __global__ void gemm_half_q_half_gptq_3bit_kernel(
 
   // Zero output
   if (n >= size_n) return;
+
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < m_count; m++) {
+      *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
+    }
+  }
+#endif
 
   __syncthreads();
 
@@ -562,6 +609,7 @@ __global__ void gemm_half_q_half_gptq_3bit_kernel(
 }
 
 template <bool first_block, int m_count>
+VLLM_GPTQ_LAUNCH_BOUNDS
 __global__ void gemm_half_q_half_gptq_8bit_kernel(
     const half* __restrict__ a, const uint32_t* __restrict__ b_q_weight,
     const uint32_t* __restrict__ b_gptq_qzeros,
@@ -607,6 +655,14 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
   // Zero output
   if (n >= size_n) return;
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < m_count; m++) {
+      *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
+    }
+  }
+#endif
+
   __syncthreads();
 
   // Find initial group
@@ -623,11 +679,17 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
 
   // Initial group
   int zeros[4];
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  float scales[4];
+  b_gptq_qzeros_.item4(zeros, group, n);
+  b_gptq_scales_.item4_f(scales, group, n);
+  float block_c[m_count][4] = {};
+#else
   half scales[4];
   b_gptq_qzeros_.item4(zeros, group, n);
   b_gptq_scales_.item4(scales, group, n);
-  // Column result
   half block_c[m_count][4] = {};
+#endif
 
   // Dequantize and multiply
   int k = offset_k;
@@ -636,7 +698,11 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
       group++;
       nextgroup += groupsize;
       b_gptq_qzeros_.item4(zeros, group, n);
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      b_gptq_scales_.item4_f(scales, group, n);
+#else
       b_gptq_scales_.item4(scales, group, n);
+#endif
     }
 
 #pragma unroll
@@ -657,6 +723,19 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
       dequant_8bit_8(load_int4[0].w, load_int4[1].w, dq[3], size_n,
                      zeros[3] + zero_offset);
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+#pragma unroll
+      for (int m = 0; m < m_count; m++) {
+        block_c[m][0] = fma(dot22_8_f(dq[0], a_ptr + m * a_stride), scales[0],
+                            block_c[m][0]);
+        block_c[m][1] = fma(dot22_8_f(dq[1], a_ptr + m * a_stride), scales[1],
+                            block_c[m][1]);
+        block_c[m][2] = fma(dot22_8_f(dq[2], a_ptr + m * a_stride), scales[2],
+                            block_c[m][2]);
+        block_c[m][3] = fma(dot22_8_f(dq[3], a_ptr + m * a_stride), scales[3],
+                            block_c[m][3]);
+      }
+#else
       for (int m = 0; m < m_count; m++) {
         block_c[m][0] =
             dot22_8_h(dq[0], a_ptr + m * a_stride, block_c[m][0], scales[0]);
@@ -667,6 +746,7 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
         block_c[m][3] =
             dot22_8_h(dq[3], a_ptr + m * a_stride, block_c[m][3], scales[3]);
       }
+#endif
       a_ptr += 8;
     }
     k += 32;
@@ -674,8 +754,15 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
 
   for (int m = 0; m < m_count; m++) {
     half2* out = (half2*)c_.item_ptr(offset_m + m, n);
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+    half2 result01 = __halves2half2(__float2half_rn(block_c[m][0]),
+                                    __float2half_rn(block_c[m][1]));
+    half2 result23 = __halves2half2(__float2half_rn(block_c[m][2]),
+                                    __float2half_rn(block_c[m][3]));
+#else
     half2 result01 = __halves2half2(block_c[m][0], block_c[m][1]);
     half2 result23 = __halves2half2(block_c[m][2], block_c[m][3]);
+#endif
     atomicAdd(out, result01);
     atomicAdd(out + 1, result23);
   }
@@ -1154,13 +1241,22 @@ void reconstruct_exllama(const uint32_t* b_q_weight,
   gridDim.y = DIVIDE(height, BLOCK_KN_SIZE);
   gridDim.x = DIVIDE(width, BLOCK_KN_SIZE);
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  auto reconstruct_exllama_kernel = reconstruct_exllama_8bit_kernel;
+#else
   auto reconstruct_exllama_kernel = reconstruct_exllama_4bit_kernel;
+#endif
   if (bit == 2) {
     reconstruct_exllama_kernel = reconstruct_exllama_2bit_kernel;
   } else if (bit == 3) {
     reconstruct_exllama_kernel = reconstruct_exllama_3bit_kernel;
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  } else if (bit == 4) {
+    reconstruct_exllama_kernel = reconstruct_exllama_4bit_kernel;
+#else
   } else if (bit == 8) {
     reconstruct_exllama_kernel = reconstruct_exllama_8bit_kernel;
+#endif
   }
 
   const cudaStream_t stream = get_current_cuda_stream();
@@ -1203,6 +1299,13 @@ __global__ void gemm_half_q_half_alt_4bit_kernel(
         __halves2half2(__int2half_rn(val & 0xF), __int2half_rn(val >> 4));
   }
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < b_end; m++) {
+      mul[(b + m) * width + w] = __int2half_rn(0);
+    }
+  }
+#endif
   __syncthreads();
 
   int i = width * h + w;
@@ -1210,7 +1313,9 @@ __global__ void gemm_half_q_half_alt_4bit_kernel(
   int k = 0;
   int z_w = w / 8;
   int z_mod = (w % 8) * 4;
+#if !defined(VLLM_GFX906_LEGACY_QGEMM)
   half2 res2;
+#endif
   half res[BLOCK_M_SIZE_MAX] = {};
 
   unsigned int tmp;
@@ -1236,11 +1341,15 @@ __global__ void gemm_half_q_half_alt_4bit_kernel(
       zeros_tmp[tmp_k] = zero;
     }
     for (int m = 0; m < b_end; m++) {
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      half2 res2{};
+#else
 #ifndef USE_ROCM
       res2 = {};
 #else
       res2.x = __half_as_ushort(__float2half(0));
       res2.y = __half_as_ushort(__float2half(0));
+#endif
 #endif
       res2 = __hfma2(
           __hfma2(deq2[(tmp >> 0) & 0xff][off], scales_tmp[0], zeros_tmp[0]),
@@ -1254,7 +1363,9 @@ __global__ void gemm_half_q_half_alt_4bit_kernel(
       res2 = __hfma2(
           __hfma2(deq2[(tmp >> 24) & 0xff][off], scales_tmp[3], zeros_tmp[3]),
           blockvec[m][k + 3], res2);
-#ifndef USE_ROCM
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      res[m] = __hadd(res[m], __hadd(res2.x, res2.y));
+#elif !defined(USE_ROCM)
       res[m] = __hadd(res[m], __hadd(res2.x, res2.y));
 #else
       res[m] = __hadd(
@@ -1295,6 +1406,13 @@ __global__ void gemm_half_q_half_alt_8bit_kernel(
     }
   }
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < b_end; m++) {
+      mul[(b + m) * width + w] = __int2half_rn(0);
+    }
+  }
+#endif
   __syncthreads();
 
   int i = width * h + w;
@@ -1302,7 +1420,9 @@ __global__ void gemm_half_q_half_alt_8bit_kernel(
   int k = 0;
   int z_w = w / 4;
   int z_mod = (w % 4) * 8;
+#if !defined(VLLM_GFX906_LEGACY_QGEMM)
   half2 res2;
+#endif
   half res[BLOCK_M_SIZE_MAX] = {};
 
   unsigned int tmp;
@@ -1328,11 +1448,15 @@ __global__ void gemm_half_q_half_alt_8bit_kernel(
       zeros_tmp[tmp_k] = zero;
     }
     for (int m = 0; m < b_end; m++) {
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      half2 res2{};
+#else
 #ifndef USE_ROCM
       res2 = {};
 #else
       res2.x = __half_as_ushort(__float2half(0));
       res2.y = __half_as_ushort(__float2half(0));
+#endif
 #endif
       half2 v12 = __halves2half2(__int2half_rn(tmp & 0xFF),
                                  __int2half_rn((tmp >> 8) & 0xFF));
@@ -1342,7 +1466,9 @@ __global__ void gemm_half_q_half_alt_8bit_kernel(
                                  __int2half_rn((tmp >> 24) & 0xFF));
       res2 = __hfma2(__hfma2(v34, scales_tmp[1], zeros_tmp[1]),
                      blockvec[m][k + 1], res2);
-#ifndef USE_ROCM
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      res[m] = __hadd(res[m], __hadd(res2.x, res2.y));
+#elif !defined(USE_ROCM)
       res[m] = __hadd(res[m], __hadd(res2.x, res2.y));
 #else
       res[m] = __hadd(
@@ -1832,7 +1958,12 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
                                 bool use_v2_format, int64_t bit) {
   const torch::stable::accelerator::DeviceGuard device_guard(
       a.get_device_index());
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  auto c = torch::stable::empty({a.size(0), b_q_weight.size(1)},
+                                a.scalar_type(), std::nullopt, a.device());
+#else
   auto c = torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)});
+#endif
   auto temp_dq =
       torch::stable::empty({b_q_weight.size(0) * 32 / bit, b_q_weight.size(1)},
                            a.scalar_type(), std::nullopt, a.device());
@@ -1843,6 +1974,9 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
       (const uint32_t*)b_gptq_qzeros.data_ptr(),
       (const half*)b_gptq_scales.data_ptr(),
       b_g_idx.device().type() == torch::stable::DeviceType::Meta
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+              || b_g_idx.numel() == 0
+#endif
           ? NULL
           : (const int*)b_g_idx.data_ptr(),
       (half*)c.data_ptr(), (half*)temp_dq.data_ptr(),

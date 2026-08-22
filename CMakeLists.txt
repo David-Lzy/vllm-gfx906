@@ -1133,6 +1133,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
 
   message(STATUS "Enabling C_stable extension.")
   list(REMOVE_DUPLICATES VLLM_STABLE_EXT_SRC)
+  option(VLLM_GFX906_LEGACY_QGEMM
+    "Enable the legacy W4A16 QGEMM/QDQ composition for a gfx906-only HIP build"
+    OFF)
   define_extension_target(
     _C_stable_libtorch
     DESTINATION vllm
@@ -1171,6 +1174,15 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
       CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
   elseif(VLLM_GPU_LANG STREQUAL "HIP")
     target_compile_definitions(_C_stable_libtorch PRIVATE USE_ROCM)
+    if(VLLM_GFX906_LEGACY_QGEMM)
+      if(NOT VLLM_GPU_ARCHES STREQUAL "gfx906")
+        message(FATAL_ERROR
+          "VLLM_GFX906_LEGACY_QGEMM requires exactly one target: gfx906")
+      endif()
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_GFX906_LEGACY_QGEMM=1)
+      message(STATUS "Enabling gfx906-only legacy QGEMM/QDQ composition")
+    endif()
   endif()
 
   # On ROCm, _C_stable_libtorch calls raw HIP APIs (e.g. hipGetDevice in
