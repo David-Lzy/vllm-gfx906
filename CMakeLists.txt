@@ -1136,6 +1136,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
   option(VLLM_GFX906_LEGACY_QGEMM
     "Enable the legacy W4A16 QGEMM/QDQ composition for a gfx906-only HIP build"
     OFF)
+  set(VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK "8" CACHE STRING
+    "Rows per legacy gfx906 W4A16 QGEMM block (4 or 8)")
   define_extension_target(
     _C_stable_libtorch
     DESTINATION vllm
@@ -1179,9 +1181,15 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
         message(FATAL_ERROR
           "VLLM_GFX906_LEGACY_QGEMM requires exactly one target: gfx906")
       endif()
+      if(NOT VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK MATCHES "^(4|8)$")
+        message(FATAL_ERROR
+          "VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK must be 4 or 8")
+      endif()
       target_compile_definitions(_C_stable_libtorch PRIVATE
-        VLLM_GFX906_LEGACY_QGEMM=1)
-      message(STATUS "Enabling gfx906-only legacy QGEMM/QDQ composition")
+        VLLM_GFX906_LEGACY_QGEMM=1
+        VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK=${VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK})
+      message(STATUS
+        "Enabling gfx906-only legacy QGEMM/QDQ composition with ${VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK} rows per block")
     endif()
   endif()
 
