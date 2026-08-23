@@ -42,6 +42,7 @@ meaningful regression in the primary serving workload.
 | gfx906 legacy QGEMM bundle, including K=256 launch geometry | Qwen AWQ W4A16 linear layers on gfx906 | retained-targeted; built only with the gfx906 CMake guard |
 | gfx906 SplitKV composition | Qwen3.8 long-context decode | retained-targeted; long-context profile only |
 | GDN output-projection reshape elision | Qwen3.8 32K cache-hit decode | provisional-positive; retained as a default-off overlay because short decode regressed |
+| Qwen3 vision encoder `torch.compile` | Qwen3.5 9B AWQ | provisional-positive; source and benchmark retained, but no repeatable image-speed gain, so default off |
 
 The legacy QGEMM bundle is intentionally treated as one coherent optimization:
 K=256 geometry, QDQ behavior, accumulation, and output initialization are not

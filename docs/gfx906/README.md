@@ -28,6 +28,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.5 multimodal prefix-cache transport screen](phase-58-qwen35-mm-prefix-cache-transport.md)
 - [Qwen Mamba prefill-checkpoint screen](phase-59-qwen-mamba-prefill-checkpoint-screen.md)
 - [Positive-gain retention policy](positive-gain-retention.md)
+- [Phase 64 positive-gain revalidation](phase-64-positive-gain-revalidation.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
