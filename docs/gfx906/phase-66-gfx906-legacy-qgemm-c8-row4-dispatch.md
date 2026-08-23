@@ -39,11 +39,17 @@ xgrammar/FSM, RCCL, and NCCL fatal signatures.
 
 ## Disposition
 
-**retained-targeted, default off.** A stable two-to-three percent C8 gain is
-valuable on gfx906 and is retained with its narrow guard. It is not the default
-release configuration because one-image C1 regressed around 1.3 percent on
-average. Use it only for a deployment that explicitly prioritizes sustained
-eight-request decode throughput; otherwise retain the validated row-8 default.
+**retained-targeted; default enabled for the Qwen3.5 9B AWQ gfx906 C8 release
+profile.** A stable two-to-three percent C8 gain is valuable on gfx906 and is
+retained with its narrow guard. Phase 68 traced the request-time calls and
+proved that the M=8 guard fires for the C8 path but not text C1 or one-image C1.
+The one-image movement in this table therefore cannot be caused by the exact-M8
+dispatch and is treated as benchmark variation rather than a release blocker.
+
+The generic CMake option remains default-off for unrelated models and hardware.
+The supported Qwen3.5 9B AWQ gfx906 C8 release profile should enable
+`VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK=4`; production promotion still
+requires the separate canary gate.
 
 Raw results remain outside Git in the configured local build root. The first
 run is `20260823T-phase66-hybrid-c8-ab`; the independent repeat is
