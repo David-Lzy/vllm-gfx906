@@ -41,7 +41,7 @@ meaningful regression in the primary serving workload.
 | --- | --- | --- |
 | gfx906 legacy QGEMM bundle, including K=256 launch geometry | Qwen AWQ W4A16 linear layers on gfx906 | retained-targeted; built only with the gfx906 CMake guard |
 | gfx906 legacy QGEMM row-4 tiling | Qwen3.5 9B AWQ C8 decode | retained-targeted; repeated +2.52% C8 result, default off |
-| gfx906 legacy QGEMM exact-M8 row-4 dispatch | Qwen3.5 9B AWQ C8 decode, row-8 elsewhere | retained-targeted; repeated +2.85% C8 result, enabled in the supported C8 profile after Phase 68 call attribution |
+| gfx906 legacy QGEMM exact-M8 row-4 dispatch | Qwen3.5 9B AWQ C8 decode, row-8 elsewhere | retained-targeted; repeated +2.85% C8 result, call-attributed in Phase 68 and confirmed fastest across every row geometry in Phase 69 |
 | gfx906 SplitKV composition | Qwen3.8 long-context decode | retained-targeted; long-context profile only |
 | GDN output-projection reshape elision | Qwen3.8 32K cache-hit decode | provisional-positive; retained as a default-off overlay because short decode regressed |
 | Qwen3 vision encoder `torch.compile` | Qwen3.5 9B AWQ | provisional-positive; source and benchmark retained, but no repeatable image-speed gain, so default off |
