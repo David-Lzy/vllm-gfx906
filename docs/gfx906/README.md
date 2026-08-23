@@ -31,6 +31,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Phase 64 positive-gain revalidation](phase-64-positive-gain-revalidation.md)
 - [Phase 65 legacy QGEMM row-tiling result](phase-65-gfx906-legacy-qgemm-row-tiling.md)
 - [Phase 66 exact-M8 legacy QGEMM dispatch result](phase-66-gfx906-legacy-qgemm-c8-row4-dispatch.md)
+- [Phase 67 exact-M8 legacy QGEMM row-2 screen](phase-67-gfx906-legacy-qgemm-c8-row2-sweep.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
