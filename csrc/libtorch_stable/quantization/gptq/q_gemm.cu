@@ -1652,14 +1652,20 @@ void gemm_half_q_half_cuda(cublasHandle_t cublas_handle, const half* a,
                 &alpha, temp_dq, size_n, a, size_k, &beta, c, size_n);
   } else if (use_exllama) {
     // Quantized matmul
-    int max_chunks = size_m / BLOCK_M_SIZE_MAX;
-    int last_chunk = max_chunks * BLOCK_M_SIZE_MAX;
+    int rows_per_block = BLOCK_M_SIZE_MAX;
+#if defined(VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK)
+    if (size_m == 8) {
+      rows_per_block = VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK;
+    }
+#endif
+    int max_chunks = size_m / rows_per_block;
+    int last_chunk = max_chunks * rows_per_block;
     int last_chunk_size = size_m - last_chunk;
 
     if (max_chunks) {
       gemm_half_q_half_cuda_part(a, b_q_weight, b_gptq_qzeros, b_gptq_scales,
                                  b_g_idx, c, last_chunk, size_n, size_k,
-                                 BLOCK_M_SIZE_MAX, groups, use_v2_format, bit);
+                                 rows_per_block, groups, use_v2_format, bit);
     }
 
     if (last_chunk_size) {
