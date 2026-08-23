@@ -29,6 +29,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen Mamba prefill-checkpoint screen](phase-59-qwen-mamba-prefill-checkpoint-screen.md)
 - [Positive-gain retention policy](positive-gain-retention.md)
 - [Phase 64 positive-gain revalidation](phase-64-positive-gain-revalidation.md)
+- [Phase 65 legacy QGEMM row-tiling result](phase-65-gfx906-legacy-qgemm-row-tiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
