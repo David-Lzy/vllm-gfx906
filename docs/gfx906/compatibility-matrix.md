@@ -106,3 +106,8 @@ same MI50 hardware. It is not a production recommendation.
   `9.37ms` for the standard FP16 logits path in the captured geometry. The
   C1 regression is therefore not attributed to either packed component; no
   bespoke embedding or lm-head implementation is retained.
+- Phase 136 revalidated the earlier Qwen3.8 SplitKV 29-partition choice on the
+  v0.28 TP4 standard-AWQ path. A bounded default-off selector improved a
+  matched 32K prefix-cache-hit decode from `18.04` to `20.47 tok/s` (+13.51%),
+  with C1 effectively unchanged and C8 +1.78%. The option remains limited to
+  compatible Qwen3.8 TP4 development profiles pending a dedicated canary.

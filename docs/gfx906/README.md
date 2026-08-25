@@ -53,6 +53,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.6 MRoPE fusion backport screen](phase-128-qwen36-mrope-fusion-v028.md)
 - [Triton 3.6 conditional-pointer intersection](phase-129-triton36-scf-pointer-intersection.md)
 - [Qwen3.6 packed-INT8 fused QK/RoPE TP4 composition](phase-135-qwen36-packed-int8-fused-tp4.md)
+- [Qwen3.8 TP4 SplitKV 29-partition rebase](phase-136-v028-qwen38-tp4-splitkv29-rebase.md)
 - [Qwen3.5 multimodal truncation and profiling](phase-131-qwen35-mm-truncation-profiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
