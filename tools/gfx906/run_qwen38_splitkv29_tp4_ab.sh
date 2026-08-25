@@ -314,13 +314,13 @@ run_variant() {
           --served-model-name $SERVED_MODEL --tensor-parallel-size 4 --dtype float16 \\
           --trust-remote-code --linear-backend gfx906_gptq --max-model-len 100000 \\
           --gpu-memory-utilization 0.88 --max-num-seqs 8 --max-num-batched-tokens 8192 \\
-          --limit-mm-per-prompt '{\\\"image\\\":64,\\\"video\\\":0}' \\
-          --mm-processor-kwargs '{\\\"max_pixels\\\":16777216}' \\
+          --limit-mm-per-prompt '{\"image\":64,\"video\":0}' \\
+          --mm-processor-kwargs '{\"max_pixels\":16777216}' \\
           --mm-processor-cache-type shm --mm-processor-cache-gb 16 \\
           --mm-shm-cache-max-object-size-mb 512 --mm-tensor-ipc direct_rpc \\
           --mm-encoder-tp-mode data --renderer-num-workers 1 --enable-prefix-caching \\
           --enable-chunked-prefill --mamba-cache-mode align --skip-mm-profiling \\
-          --reasoning-parser qwen3 --default-chat-template-kwargs '{\\\"enable_thinking\\\":false}'" \
+          --reasoning-parser qwen3 --default-chat-template-kwargs '{\"enable_thinking\":false}'" \
         >"$directory/container-id.txt"
     wait_for_health "$port" "$variant"
     elapsed="$(awk -v start="$started" -v end="$(date +%s%N)" 'BEGIN {printf "%.3f", (end-start)/1000000000}')"
