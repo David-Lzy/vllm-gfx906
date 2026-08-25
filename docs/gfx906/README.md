@@ -47,6 +47,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.8 packed-INT8 numeric parity and precision fix](phase-123-v028-qwen38-int8-numeric-parity.md)
 - [Qwen3.8 packed-INT8 TP4 revalidation](phase-124-v028-qwen38-packed-int8-tp4.md)
 - [Qwen3.6 packed-INT8 TP4 portability](phase-125-v028-qwen36-packed-int8-tp4.md)
+- [Qwen3.5 packed-INT8 TP1 portability](phase-126-v028-qwen35-packed-int8-tp1.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)

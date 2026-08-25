@@ -92,3 +92,11 @@ same MI50 hardware. It is not a production recommendation.
   `+0.20%` C1 and `+4.24%` C8 against the Qwen3.6 standard-TP4 baseline.
   Both packed profiles remain development-only until each has a separate
   production model and serving canary rationale.
+- Phase 126 then applied the same copy-on-write packed-INT8 embedding/head
+  profile to Qwen3.5 9B on independent TP1 workers. It passed text, one/two
+  256-square-image, and JSON 3/3 gates. Matched throughput regressed at C1
+  (`-4.2%` text) but improved at C8 (`+8.0%` text, `+9.4%` one image, and
+  `+3.9%` two images). A temporary two-worker Router confirmation preserved
+  that saturated direction. The profile is retained for development only; it
+  is not a Qwen3.5 production candidate until an interleaved multi-worker
+  control and a mixed-workload canary prove a net end-to-end gain.
