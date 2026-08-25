@@ -7,9 +7,12 @@
 #  - Chih-Chieh Yang <chih.chieh.yang@ibm.com>
 #  - Thomas Parnell <tpa@zurich.ibm.com>
 
+import math
+
 import torch
 
 from vllm import _custom_ops as ops
+from vllm import envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
@@ -19,6 +22,9 @@ from .prefix_prefill import context_attention_fwd
 logger = init_logger(__name__)
 
 float8_info = torch.finfo(current_platform.fp8_dtype())
+
+_MAX_GFX906_SPLITKV_SPLITS = 16
+_DEFAULT_GFX906_SPLITKV_BLOCK_SIZE = 32
 
 
 def has_native_kv_cache_layout(
@@ -35,6 +41,34 @@ def has_native_kv_cache_layout(
         key_cache.stride(0) == key_cache.shape[1:].numel()
         and value_cache.stride(0) == value_cache.shape[1:].numel()
     )
+
+
+def _cdiv(x: int, y: int) -> int:
+    return (x + y - 1) // y
+
+
+def _choose_gfx906_splitkv_block_size(physical_block_size: int) -> int:
+    """Use the largest practical logical tile for a hybrid KV page."""
+    for block_size in (32, 16, 8, 4, 2):
+        if physical_block_size % block_size == 0:
+            return min(block_size, _DEFAULT_GFX906_SPLITKV_BLOCK_SIZE)
+    return 1
+
+
+def _get_gfx906_splitkv_query_rows(
+    num_query_heads: int,
+    num_kv_heads: int,
+    head_size: int,
+) -> int:
+    num_queries_per_kv = num_query_heads // num_kv_heads
+    if (
+        envs.VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS == "8"
+        and num_query_heads % num_kv_heads == 0
+        and num_queries_per_kv == 6
+        and head_size == 256
+    ):
+        return 8
+    return max(triton.next_power_of_2(num_queries_per_kv), 16)
 
 
 @triton.jit
@@ -282,6 +316,426 @@ def kernel_paged_attention_2d(
     )
 
 
+@triton.jit
+def kernel_paged_attention_2d_gfx906_splitkv(
+    mid_out_ptr,
+    mid_lse_ptr,
+    query_ptr,
+    key_cache_ptr,
+    value_cache_ptr,
+    block_tables_ptr,
+    seq_lens_ptr,
+    scale,
+    num_query_heads: tl.constexpr,
+    num_queries_per_kv: tl.constexpr,
+    num_queries_per_kv_padded: tl.constexpr,
+    block_table_stride: tl.int64,
+    query_stride_0: tl.int64,
+    query_stride_1: tl.int64,
+    mid_out_stride_0: tl.int64,
+    mid_out_stride_1: tl.int64,
+    mid_out_stride_2: tl.int64,
+    mid_lse_stride_0: tl.int64,
+    mid_lse_stride_1: tl.int64,
+    mid_lse_stride_2: tl.int64,
+    BLOCK_SIZE: tl.constexpr,
+    PHYSICAL_BLOCK_SIZE: tl.constexpr,
+    HEAD_SIZE: tl.constexpr,
+    HEAD_SIZE_PADDED: tl.constexpr,
+    x: tl.constexpr,
+    stride_k_cache_0: tl.int64,
+    stride_k_cache_1: tl.int64,
+    stride_k_cache_2: tl.int64,
+    stride_k_cache_3: tl.int64,
+    stride_k_cache_4: tl.int64,
+    stride_v_cache_0: tl.int64,
+    stride_v_cache_1: tl.int64,
+    stride_v_cache_2: tl.int64,
+    stride_v_cache_3: tl.int64,
+    query_start_loc_ptr,
+):
+    seq_idx = tl.program_id(0)
+    kv_head_idx = tl.program_id(1)
+    split_idx = tl.program_id(2)
+
+    query_start = tl.load(query_start_loc_ptr + seq_idx)
+    query_end = tl.load(query_start_loc_ptr + seq_idx + 1)
+    if query_end - query_start > 1:
+        return
+
+    seq_len = tl.load(seq_lens_ptr + seq_idx)
+    num_splits = tl.num_programs(2)
+    split_len = cdiv_fn(cdiv_fn(seq_len, num_splits), BLOCK_SIZE) * BLOCK_SIZE
+    split_start = split_idx * split_len
+    split_end = tl.minimum(split_start + split_len, seq_len)
+
+    query_head_idx = kv_head_idx * num_queries_per_kv + tl.arange(
+        0, num_queries_per_kv_padded
+    )
+    head_mask = query_head_idx < (kv_head_idx + 1) * num_queries_per_kv
+    head_mask = head_mask & (query_head_idx < num_query_heads)
+    offs_d = tl.arange(0, HEAD_SIZE_PADDED)
+    dim_mask = offs_d < HEAD_SIZE
+
+    query_offset = (
+        query_start * query_stride_0 + query_head_idx[:, None] * query_stride_1
+    )
+    q = tl.load(
+        query_ptr + query_offset + offs_d[None, :],
+        mask=head_mask[:, None] & dim_mask[None, :],
+        other=0.0,
+    )
+
+    max_logits = tl.full(
+        [num_queries_per_kv_padded], float("-inf"), dtype=tl.float32
+    )
+    exp_sums = tl.zeros([num_queries_per_kv_padded], dtype=tl.float32)
+    acc = tl.zeros([num_queries_per_kv_padded, HEAD_SIZE_PADDED], dtype=tl.float32)
+    block_table_offset = seq_idx * block_table_stride
+    offs_n = tl.arange(0, BLOCK_SIZE)
+
+    for start_n in tl.range(split_start, split_end, BLOCK_SIZE):
+        abs_token_idx = start_n + offs_n
+        logical_block_idx = abs_token_idx // PHYSICAL_BLOCK_SIZE
+        physical_block_idx = tl.load(
+            block_tables_ptr + block_table_offset + logical_block_idx
+        )
+        internal_offsets = abs_token_idx % PHYSICAL_BLOCK_SIZE
+        token_mask = abs_token_idx < split_end
+        k_offset = (
+            physical_block_idx[None, :] * stride_k_cache_0
+            + kv_head_idx * stride_k_cache_1
+            + (offs_d[:, None] // x) * stride_k_cache_2
+            + internal_offsets[None, :] * stride_k_cache_3
+            + (offs_d[:, None] % x) * stride_k_cache_4
+        )
+        k = tl.load(
+            key_cache_ptr + k_offset,
+            mask=dim_mask[:, None] & token_mask[None, :],
+            other=0.0,
+            eviction_policy="evict_last",
+        )
+        v_offset = (
+            physical_block_idx[:, None] * stride_v_cache_0
+            + kv_head_idx * stride_v_cache_1
+            + offs_d[None, :] * stride_v_cache_2
+            + internal_offsets[:, None] * stride_v_cache_3
+        )
+        v = tl.load(
+            value_cache_ptr + v_offset,
+            mask=token_mask[:, None] & dim_mask[None, :],
+            other=0.0,
+            eviction_policy="evict_last",
+        )
+
+        scores = scale * tl.dot(q, k)
+        scores = tl.where(
+            head_mask[:, None] & token_mask[None, :], scores, float("-inf")
+        )
+        block_max = tl.maximum(max_logits, tl.max(scores, axis=1))
+        probabilities = tl.exp(scores - block_max[:, None])
+        probabilities = tl.where(
+            block_max[:, None] == float("-inf"), 0.0, probabilities
+        )
+        block_exp_sum = tl.sum(probabilities, axis=1)
+        rescale = tl.exp(max_logits - block_max)
+        rescale = tl.where(max_logits == float("-inf"), 0.0, rescale)
+        acc = acc * rescale[:, None]
+        exp_sums = exp_sums * rescale + block_exp_sum
+        max_logits = block_max
+        acc += tl.dot(probabilities.to(v.dtype), v)
+
+    mid_out_offset = (
+        seq_idx * mid_out_stride_0
+        + query_head_idx[:, None] * mid_out_stride_1
+        + split_idx * mid_out_stride_2
+        + offs_d[None, :]
+    )
+    mid_lse_offset = (
+        seq_idx * mid_lse_stride_0
+        + query_head_idx * mid_lse_stride_1
+        + split_idx * mid_lse_stride_2
+    )
+    has_tokens = split_end > split_start
+    tl.store(
+        mid_out_ptr + mid_out_offset,
+        acc / (exp_sums[:, None] + 1e-10),
+        mask=has_tokens & head_mask[:, None] & dim_mask[None, :],
+    )
+    tl.store(
+        mid_lse_ptr + mid_lse_offset,
+        max_logits + tl.log(exp_sums),
+        mask=has_tokens & head_mask,
+    )
+
+
+@triton.jit
+def kernel_paged_attention_2d_gfx906_splitkv_reduce(
+    output_ptr,
+    mid_out_ptr,
+    mid_lse_ptr,
+    seq_lens_ptr,
+    output_stride_0: tl.int64,
+    output_stride_1: tl.int64,
+    mid_out_stride_0: tl.int64,
+    mid_out_stride_1: tl.int64,
+    mid_out_stride_2: tl.int64,
+    mid_lse_stride_0: tl.int64,
+    mid_lse_stride_1: tl.int64,
+    mid_lse_stride_2: tl.int64,
+    BLOCK_SIZE: tl.constexpr,
+    HEAD_SIZE: tl.constexpr,
+    HEAD_SIZE_PADDED: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    query_start_loc_ptr,
+):
+    seq_idx = tl.program_id(0)
+    query_head_idx = tl.program_id(1)
+    query_start = tl.load(query_start_loc_ptr + seq_idx)
+    query_end = tl.load(query_start_loc_ptr + seq_idx + 1)
+    if query_end - query_start > 1:
+        return
+
+    seq_len = tl.load(seq_lens_ptr + seq_idx)
+    split_len = cdiv_fn(cdiv_fn(seq_len, NUM_SPLITS), BLOCK_SIZE) * BLOCK_SIZE
+    offs_d = tl.arange(0, HEAD_SIZE_PADDED)
+    dim_mask = offs_d < HEAD_SIZE
+    max_logit = -float("inf")
+    exp_sum = 0.0
+    acc = tl.zeros([HEAD_SIZE_PADDED], dtype=tl.float32)
+
+    for split_idx in tl.range(0, NUM_SPLITS, num_stages=2):
+        split_start = split_idx * split_len
+        split_end = tl.minimum(split_start + split_len, seq_len)
+        if split_end > split_start:
+            lse = tl.load(
+                mid_lse_ptr
+                + seq_idx * mid_lse_stride_0
+                + query_head_idx * mid_lse_stride_1
+                + split_idx * mid_lse_stride_2
+            )
+            partial = tl.load(
+                mid_out_ptr
+                + seq_idx * mid_out_stride_0
+                + query_head_idx * mid_out_stride_1
+                + split_idx * mid_out_stride_2
+                + offs_d,
+                mask=dim_mask,
+                other=0.0,
+            )
+            merged_max = tl.maximum(max_logit, lse)
+            old_scale = tl.exp(max_logit - merged_max)
+            new_scale = tl.exp(lse - merged_max)
+            acc = acc * old_scale + partial * new_scale
+            exp_sum = exp_sum * old_scale + new_scale
+            max_logit = merged_max
+
+    tl.store(
+        output_ptr
+        + query_start * output_stride_0
+        + query_head_idx * output_stride_1
+        + offs_d,
+        acc / (exp_sum + 1e-10),
+        mask=dim_mask,
+    )
+
+
+def _num_gfx906_splitkv_splits(
+    batch_size: int,
+    num_kv_heads: int,
+    max_seq_len: int,
+    logical_block_size: int,
+    max_num_splits: int = _MAX_GFX906_SPLITKV_SPLITS,
+) -> int:
+    if max_seq_len <= logical_block_size:
+        return 1
+    num_sms = torch.cuda.get_device_properties(
+        torch.accelerator.current_device_index()
+    ).multi_processor_count
+    num_blocks = _cdiv(max_seq_len, logical_block_size)
+    if num_blocks < 2 * num_sms:
+        return 1
+    target_workgroups = 2 * num_sms
+    batch_nheads = batch_size * num_kv_heads
+    if batch_nheads >= 0.8 * target_workgroups:
+        return 1
+    max_splits = min(max_num_splits, num_sms, num_blocks)
+    candidates: list[tuple[int, float]] = []
+    for num_splits in range(1, max_splits + 1):
+        if num_splits > 1 and _cdiv(num_blocks, num_splits) == _cdiv(
+            num_blocks, num_splits - 1
+        ):
+            continue
+        waves = batch_nheads * num_splits / target_workgroups
+        candidates.append((num_splits, waves / math.ceil(waves)))
+    best_efficiency = max(efficiency for _, efficiency in candidates)
+    for num_splits, efficiency in candidates:
+        if efficiency >= 0.85 * best_efficiency:
+            return num_splits
+    return 1
+
+
+def paged_attention_2d_gfx906_splitkv_decode(
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    scale: float,
+    output: torch.Tensor,
+    max_seq_len: int,
+    query_start_loc: torch.Tensor,
+) -> None:
+    """Run the opt-in SplitKV decode path for gfx906 Qwen hybrid attention."""
+    batch_size = seq_lens.shape[0]
+    num_query_heads = query.shape[1]
+    num_kv_heads = key_cache.shape[1]
+    head_size = query.shape[2]
+    physical_block_size = key_cache.shape[3]
+    logical_block_size = _choose_gfx906_splitkv_block_size(physical_block_size)
+    num_splits = _num_gfx906_splitkv_splits(
+        batch_size, num_kv_heads, max_seq_len, logical_block_size
+    )
+    query_rows = _get_gfx906_splitkv_query_rows(
+        num_query_heads, num_kv_heads, head_size
+    )
+    if envs.VLLM_ROCM_GFX906_SPLITKV_DEBUG:
+        logger.info_once(
+            "gfx906 SplitKV decode: batch=%d kv_heads=%d seq_len=%d "
+            "physical_block=%d logical_block=%d rows=%d splits=%d",
+            batch_size,
+            num_kv_heads,
+            max_seq_len,
+            physical_block_size,
+            logical_block_size,
+            query_rows,
+            num_splits,
+        )
+
+    if num_splits == 1:
+        kernel_paged_attention_2d[(batch_size, num_kv_heads)](
+            output_ptr=output,
+            query_ptr=query,
+            key_cache_ptr=key_cache,
+            value_cache_ptr=value_cache,
+            sink_ptr=None,
+            block_tables_ptr=block_tables,
+            seq_lens_ptr=seq_lens,
+            alibi_slopes_ptr=None,
+            scale=scale,
+            k_scale=1.0,
+            v_scale=1.0,
+            out_scale_inv=1.0,
+            num_query_heads=num_query_heads,
+            num_queries_per_kv=num_query_heads // num_kv_heads,
+            num_queries_per_kv_padded=query_rows,
+            block_table_stride=block_tables.stride(0),
+            query_stride_0=query.stride(0),
+            query_stride_1=query.stride(1),
+            output_stride_0=output.stride(0),
+            output_stride_1=output.stride(1),
+            BLOCK_SIZE=logical_block_size,
+            PHYSICAL_BLOCK_SIZE=physical_block_size,
+            HEAD_SIZE=head_size,
+            HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
+            USE_ALIBI_SLOPES=False,
+            SLIDING_WINDOW=0,
+            x=key_cache.shape[4],
+            stride_k_cache_0=key_cache.stride(0),
+            stride_k_cache_1=key_cache.stride(1),
+            stride_k_cache_2=key_cache.stride(2),
+            stride_k_cache_3=key_cache.stride(3),
+            stride_k_cache_4=key_cache.stride(4),
+            stride_v_cache_0=value_cache.stride(0),
+            stride_v_cache_1=value_cache.stride(1),
+            stride_v_cache_2=value_cache.stride(2),
+            stride_v_cache_3=value_cache.stride(3),
+            filter_by_query_len=True,
+            query_start_len_ptr=query_start_loc,
+            USE_SINKS=False,
+            USE_FP8=False,
+        )
+        return
+
+    head_size_padded = triton.next_power_of_2(head_size)
+    mid_out = torch.empty(
+        (batch_size, num_query_heads, num_splits, head_size),
+        device=query.device,
+        dtype=torch.float32,
+    )
+    mid_lse = torch.empty(
+        (batch_size, num_query_heads, num_splits),
+        device=query.device,
+        dtype=torch.float32,
+    )
+    kernel_paged_attention_2d_gfx906_splitkv[(
+        batch_size,
+        num_kv_heads,
+        num_splits,
+    )](
+        mid_out,
+        mid_lse,
+        query,
+        key_cache,
+        value_cache,
+        block_tables,
+        seq_lens,
+        scale,
+        num_query_heads=num_query_heads,
+        num_queries_per_kv=num_query_heads // num_kv_heads,
+        num_queries_per_kv_padded=query_rows,
+        block_table_stride=block_tables.stride(0),
+        query_stride_0=query.stride(0),
+        query_stride_1=query.stride(1),
+        mid_out_stride_0=mid_out.stride(0),
+        mid_out_stride_1=mid_out.stride(1),
+        mid_out_stride_2=mid_out.stride(2),
+        mid_lse_stride_0=mid_lse.stride(0),
+        mid_lse_stride_1=mid_lse.stride(1),
+        mid_lse_stride_2=mid_lse.stride(2),
+        BLOCK_SIZE=logical_block_size,
+        PHYSICAL_BLOCK_SIZE=physical_block_size,
+        HEAD_SIZE=head_size,
+        HEAD_SIZE_PADDED=head_size_padded,
+        x=key_cache.shape[4],
+        stride_k_cache_0=key_cache.stride(0),
+        stride_k_cache_1=key_cache.stride(1),
+        stride_k_cache_2=key_cache.stride(2),
+        stride_k_cache_3=key_cache.stride(3),
+        stride_k_cache_4=key_cache.stride(4),
+        stride_v_cache_0=value_cache.stride(0),
+        stride_v_cache_1=value_cache.stride(1),
+        stride_v_cache_2=value_cache.stride(2),
+        stride_v_cache_3=value_cache.stride(3),
+        query_start_loc_ptr=query_start_loc,
+        num_warps=4,
+        num_stages=1,
+        waves_per_eu=1,
+    )
+    kernel_paged_attention_2d_gfx906_splitkv_reduce[(batch_size, num_query_heads)](
+        output,
+        mid_out,
+        mid_lse,
+        seq_lens,
+        output.stride(0),
+        output.stride(1),
+        mid_out.stride(0),
+        mid_out.stride(1),
+        mid_out.stride(2),
+        mid_lse.stride(0),
+        mid_lse.stride(1),
+        mid_lse.stride(2),
+        BLOCK_SIZE=logical_block_size,
+        HEAD_SIZE=head_size,
+        HEAD_SIZE_PADDED=head_size_padded,
+        NUM_SPLITS=num_splits,
+        query_start_loc_ptr=query_start_loc,
+        num_warps=4,
+        num_stages=1,
+        waves_per_eu=1,
+    )
+
+
 def chunked_prefill_paged_decode(
     query,
     key,
@@ -458,50 +912,78 @@ def chunked_prefill_paged_decode(
         else:
             processed_block_table = block_table.to(torch.int32)
 
-        kernel_paged_attention_2d[
-            (
-                num_seqs,
-                num_kv_heads,
-            )
-        ](
-            output_ptr=output,
-            query_ptr=query,
-            key_cache_ptr=key_cache,
-            value_cache_ptr=value_cache,
-            sink_ptr=sinks,
-            block_tables_ptr=processed_block_table,
-            seq_lens_ptr=seq_lens,
-            alibi_slopes_ptr=alibi_slopes,
-            scale=sm_scale,
-            k_scale=k_scale,
-            v_scale=v_scale,
-            out_scale_inv=1.0 / output_scale if output_scale is not None else 1.0,
-            num_query_heads=num_query_heads,
-            num_queries_per_kv=num_queries_per_kv,
-            num_queries_per_kv_padded=num_queries_per_kv_padded,
-            block_table_stride=processed_block_table.stride(0),
-            query_stride_0=query.stride(0),
-            query_stride_1=query.stride(1),
-            output_stride_0=output.stride(0),
-            output_stride_1=output.stride(1),
-            BLOCK_SIZE=TRITON_BLOCK_SIZE,
-            PHYSICAL_BLOCK_SIZE=real_block_size,
-            HEAD_SIZE=head_size,
-            HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
-            USE_ALIBI_SLOPES=use_alibi_slopes,
-            SLIDING_WINDOW=sliding_window,
-            x=key_cache.shape[4],
-            stride_k_cache_0=key_cache.stride(0),
-            stride_k_cache_1=key_cache.stride(1),
-            stride_k_cache_2=key_cache.stride(2),
-            stride_k_cache_3=key_cache.stride(3),
-            stride_k_cache_4=key_cache.stride(4),
-            stride_v_cache_0=value_cache.stride(0),
-            stride_v_cache_1=value_cache.stride(1),
-            stride_v_cache_2=value_cache.stride(2),
-            stride_v_cache_3=value_cache.stride(3),
-            filter_by_query_len=True,
-            query_start_len_ptr=query_start_loc,
-            USE_SINKS=sinks is not None,
-            USE_FP8=output_scale is not None,
+        from vllm.platforms.rocm import on_gfx906
+
+        splitkv_block_size = _choose_gfx906_splitkv_block_size(real_block_size)
+        use_gfx906_splitkv = (
+            on_gfx906()
+            and envs.VLLM_ROCM_ENABLE_GFX906_SPLITKV
+            and query.dtype in (torch.float16, torch.bfloat16)
+            and head_size == 256
+            and splitkv_block_size >= 16
+            and not use_alibi_slopes
+            and sliding_window == 0
+            and sinks is None
+            and output_scale is None
+            and "fp8" not in kv_cache_dtype
         )
+        if use_gfx906_splitkv:
+            paged_attention_2d_gfx906_splitkv_decode(
+                query=query,
+                key_cache=key_cache,
+                value_cache=value_cache,
+                block_tables=processed_block_table,
+                seq_lens=seq_lens,
+                scale=sm_scale,
+                output=output,
+                max_seq_len=max_seq_len,
+                query_start_loc=query_start_loc,
+            )
+        else:
+            kernel_paged_attention_2d[
+                (
+                    num_seqs,
+                    num_kv_heads,
+                )
+            ](
+                output_ptr=output,
+                query_ptr=query,
+                key_cache_ptr=key_cache,
+                value_cache_ptr=value_cache,
+                sink_ptr=sinks,
+                block_tables_ptr=processed_block_table,
+                seq_lens_ptr=seq_lens,
+                alibi_slopes_ptr=alibi_slopes,
+                scale=sm_scale,
+                k_scale=k_scale,
+                v_scale=v_scale,
+                out_scale_inv=1.0 / output_scale if output_scale is not None else 1.0,
+                num_query_heads=num_query_heads,
+                num_queries_per_kv=num_queries_per_kv,
+                num_queries_per_kv_padded=num_queries_per_kv_padded,
+                block_table_stride=processed_block_table.stride(0),
+                query_stride_0=query.stride(0),
+                query_stride_1=query.stride(1),
+                output_stride_0=output.stride(0),
+                output_stride_1=output.stride(1),
+                BLOCK_SIZE=TRITON_BLOCK_SIZE,
+                PHYSICAL_BLOCK_SIZE=real_block_size,
+                HEAD_SIZE=head_size,
+                HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
+                USE_ALIBI_SLOPES=use_alibi_slopes,
+                SLIDING_WINDOW=sliding_window,
+                x=key_cache.shape[4],
+                stride_k_cache_0=key_cache.stride(0),
+                stride_k_cache_1=key_cache.stride(1),
+                stride_k_cache_2=key_cache.stride(2),
+                stride_k_cache_3=key_cache.stride(3),
+                stride_k_cache_4=key_cache.stride(4),
+                stride_v_cache_0=value_cache.stride(0),
+                stride_v_cache_1=value_cache.stride(1),
+                stride_v_cache_2=value_cache.stride(2),
+                stride_v_cache_3=value_cache.stride(3),
+                filter_by_query_len=True,
+                query_start_len_ptr=query_start_loc,
+                USE_SINKS=sinks is not None,
+                USE_FP8=output_scale is not None,
+            )

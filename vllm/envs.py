@@ -125,6 +125,9 @@ if TYPE_CHECKING:
     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
+    VLLM_ROCM_ENABLE_GFX906_SPLITKV: bool = False
+    VLLM_ROCM_GFX906_SPLITKV_DEBUG: bool = False
+    VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS: Literal["8", "16"] = "16"
     VLLM_USE_HW_AGNOSTIC: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_GDN_DECODE_KERNEL: Literal["cuda", "triton"] = "cuda"
@@ -1202,6 +1205,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
         []
         if "VLLM_DISABLED_KERNELS" not in os.environ
         else os.environ["VLLM_DISABLED_KERNELS"].split(",")
+    ),
+    # Opt-in legacy SplitKV decode path for gfx906 head-dimension 256 models.
+    # The generic ROCm Triton kernel remains the safe default.
+    "VLLM_ROCM_ENABLE_GFX906_SPLITKV": lambda: (
+        os.getenv("VLLM_ROCM_ENABLE_GFX906_SPLITKV", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # Emit resolved SplitKV geometry during isolated benchmark runs.
+    "VLLM_ROCM_GFX906_SPLITKV_DEBUG": lambda: (
+        os.getenv("VLLM_ROCM_GFX906_SPLITKV_DEBUG", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # Qwen 27B's six-query-heads-per-KV-head geometry can use an 8-row tile.
+    "VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS": env_with_choices(
+        "VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS", "16", ["8", "16"]
     ),
     # Selects hw-agnostic layers for HF transformer backend
     "VLLM_USE_HW_AGNOSTIC": lambda: (

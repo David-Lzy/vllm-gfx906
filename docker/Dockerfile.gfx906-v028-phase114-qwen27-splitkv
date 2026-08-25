@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# Phase 114 restores the opt-in gfx906 SplitKV decode path on top of the
+# Phase 113 W4A16 QGEMM recovery. It is an experimental image, not production.
+ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase113-gptq-fdot2-llmmb4
+FROM ${BASE_IMAGE}
+
+ARG VLLM_BUILD_VERSION=0.28.0+gfx906.phase114.splitkv
+ARG VLLM_UPSTREAM_REV=2cf0a6915ce544dc493a0990f2ea38d81601128a
+
+ENV VLLM_TARGET_DEVICE=rocm \
+    PYTORCH_ROCM_ARCH=gfx906 \
+    VLLM_ROCM_USE_AITER=0 \
+    VLLM_USE_PRECOMPILED=0 \
+    VLLM_USE_PRECOMPILED_RUST=0 \
+    CMAKE_BUILD_TYPE=Release \
+    MAX_JOBS=12 \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_BUILD_VERSION} \
+    PATH=/opt/vllm-venv/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:${PATH} \
+    VIRTUAL_ENV=/opt/vllm-venv
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.revision="${VLLM_UPSTREAM_REV}" \
+      org.opencontainers.image.description="Phase 114 v0.28 gfx906 Qwen 27B SplitKV candidate; not production"
+
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && rm -f /opt/vllm-wheel/vllm-*.whl \
+    && CMAKE_ARGS='-DVLLM_GFX906_LEGACY_QGEMM=ON -DVLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK=8 -DVLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK=4' \
+        VLLM_REQUIRE_RUST_FRONTEND=1 /opt/vllm-venv/bin/python setup.py bdist_wheel \
+          --dist-dir /opt/vllm-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps --force-reinstall \
+        /opt/vllm-wheel/*.whl
+
+RUN /opt/vllm-venv/bin/python -c 'import torch, vllm; assert torch.version.hip is not None; print(vllm.__version__)'
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/vllm-venv/bin/vllm"]
+CMD ["--help"]
