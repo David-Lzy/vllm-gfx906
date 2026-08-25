@@ -100,3 +100,9 @@ same MI50 hardware. It is not a production recommendation.
   that saturated direction. The profile is retained for development only; it
   is not a Qwen3.5 production candidate until an interleaved multi-worker
   control and a mixed-workload canary prove a net end-to-end gain.
+- Phase 127 profiled the C1 component pair before considering another custom
+  kernel. The selected-token INT8 embedding gather took only `13.4us` across
+  four active steps, while the INT8 vocabulary head took `6.00ms` versus
+  `9.37ms` for the standard FP16 logits path in the captured geometry. The
+  C1 regression is therefore not attributed to either packed component; no
+  bespoke embedding or lm-head implementation is retained.
