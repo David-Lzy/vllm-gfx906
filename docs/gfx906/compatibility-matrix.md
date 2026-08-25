@@ -47,3 +47,20 @@ The selected-backport track covers Qwen3.5 9B AWQ multimodal preprocessing and
 Qwen3.8 27B AWQ hybrid/Mamba execution independently. It excludes internal
 data-parallel routing, video-only features, MI300-specific optimizations, and
 startup-only improvements until they have a direct gfx906 use case.
+
+## v0.28 experimental screen
+
+The active integration branch also contains an isolated v0.28 screen on the
+same MI50 hardware. It is not a production recommendation.
+
+- Qwen3.5 9B AWQ recovered the retained v0.27 fixed-128 reference after
+  restoring narrow gfx906 output-head and W4A16 accumulation paths: 76.72
+  tok/s C1 and 264.60 tok/s synchronized C8 median.
+- Qwen3.6 27B AWQ and Qwen3.8 27B AWQ each passed GPU2/GPU3 TP2 text,
+  one/two 256-square image, and JSON 3/3 gates with drained metrics and no
+  fatal error signature.
+- This establishes model compatibility, not long-context performance. The
+  historical gfx906 SplitKV selector was removed by the v0.28 paged-decode
+  refactor, so the 27B screen used the generic Triton paged-attention fallback.
+  Restoring that opt-in path is tracked separately before making any throughput
+  claim for 27B on v0.28.
