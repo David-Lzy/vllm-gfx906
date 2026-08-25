@@ -23,9 +23,9 @@ with upstream vLLM.
 
 ## Current Status
 
-The public documentation describes an active, experimental v0.27-era gfx906
-line. The validated small-model reference is Qwen3.5 9B AWQ with text and
-image inputs. Qwen3.8 27B AWQ can be made functionally compatible in targeted
+The public documentation describes an active, experimental v0.28 gfx906
+integration line. The validated small-model reference is Qwen3.5 9B AWQ with
+text and image inputs. Qwen3.8 27B AWQ can be made functionally compatible in targeted
 configurations, but it is an experimental performance path rather than a
 production recommendation on MI50.
 
@@ -70,6 +70,7 @@ image provenance, canary, and rollback gates:
 - [release process](docs/gfx906/release-process.md)
 - [patch ledger](docs/gfx906/patch-ledger.md)
 - [benchmark protocol](docs/gfx906/benchmark-protocol.md)
+- [evidence lifecycle](docs/gfx906/evidence-lifecycle.md)
 
 ## What This Fork Does Not Promise
 

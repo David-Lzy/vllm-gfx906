@@ -30,6 +30,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.5 multimodal prefix-cache transport screen](phase-58-qwen35-mm-prefix-cache-transport.md)
 - [Qwen Mamba prefill-checkpoint screen](phase-59-qwen-mamba-prefill-checkpoint-screen.md)
 - [Positive-gain retention policy](positive-gain-retention.md)
+- [Evidence lifecycle and branch ledger](evidence-lifecycle.md)
 - [Phase 64 positive-gain revalidation](phase-64-positive-gain-revalidation.md)
 - [Phase 65 legacy QGEMM row-tiling result](phase-65-gfx906-legacy-qgemm-row-tiling.md)
 - [Phase 66 exact-M8 legacy QGEMM dispatch result](phase-66-gfx906-legacy-qgemm-c8-row4-dispatch.md)
@@ -58,6 +59,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Benchmark protocol](benchmark-protocol.md)
 - [Release process](release-process.md)
 - [Current production partial baseline](baselines/production-v0231-partial-20260819.md)
+- [Phase 130: Qwen3.6 ROCm fused QK/RoPE dispatch](phase-130-qwen36-rocm-fused-qk-rope.md)
 
 ## Priorities
 
@@ -73,4 +75,3 @@ The v0.27 work is a separate exploration track. It first evaluates narrowly
 selected upstream backports on the validated v0.26 gfx906 base, then addresses
 the Triton 3.7 gfx906 compiler gap. It does not authorize an automatic runtime
 upgrade or production replacement.
- - [Phase 130: Qwen3.6 ROCm fused QK/RoPE dispatch](phase-130-qwen36-rocm-fused-qk-rope.md)
