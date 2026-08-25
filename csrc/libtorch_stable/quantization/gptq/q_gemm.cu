@@ -21,11 +21,23 @@ https://github.com/qwopqwop200/GPTQ-for-LLaMa
 namespace vllm {
 namespace gptq {
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+#define BLOCK_KN_SIZE 256
+#define MAX_Q_GEMM_ROWS 32
+#define MAX_Q_GEMM_ROWS_8BIT 32
+#define VLLM_GPTQ_LAUNCH_BOUNDS __launch_bounds__(BLOCK_KN_SIZE)
+#ifndef VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
+#define VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK 8
+#endif
+#define BLOCK_M_SIZE_MAX VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
+#else
 #define BLOCK_KN_SIZE 128
-#define BLOCK_M_SIZE_MAX 8
-#define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define MAX_Q_GEMM_ROWS 50
 #define MAX_Q_GEMM_ROWS_8BIT 24
+#define VLLM_GPTQ_LAUNCH_BOUNDS
+#define BLOCK_M_SIZE_MAX 8
+#endif
+#define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define MAX_ALT_GEMM_ROWS 8
 #define THREADS_X 32
 #define THREADS_Y 32
@@ -187,6 +199,7 @@ typedef void (*fp_gemm_half_q_half_gptq_kernel)(const half*, const uint32_t*,
                                                 const bool, const int*);
 
 template <bool first_block, int m_count>
+VLLM_GPTQ_LAUNCH_BOUNDS
 __global__ void gemm_half_q_half_gptq_4bit_kernel(
     const half* __restrict__ a, const uint32_t* __restrict__ b_q_weight,
     const uint32_t* __restrict__ b_gptq_qzeros,
@@ -231,6 +244,14 @@ __global__ void gemm_half_q_half_gptq_4bit_kernel(
 
   // Zero output
   if (n >= size_n) return;
+
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  if (blockIdx.z == 0) {
+    for (int m = 0; m < m_count; m++) {
+      *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
+    }
+  }
+#endif
 
   __syncthreads();
 
@@ -1522,14 +1543,20 @@ void gemm_half_q_half_cuda(cublasHandle_t cublas_handle, const half* a,
                 &alpha, temp_dq, size_n, a, size_k, &beta, c, size_n);
   } else if (use_exllama) {
     // Quantized matmul
-    int max_chunks = size_m / BLOCK_M_SIZE_MAX;
-    int last_chunk = max_chunks * BLOCK_M_SIZE_MAX;
+    int rows_per_block = BLOCK_M_SIZE_MAX;
+#if defined(VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK)
+    if (size_m == 8) {
+      rows_per_block = VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK;
+    }
+#endif
+    int max_chunks = size_m / rows_per_block;
+    int last_chunk = max_chunks * rows_per_block;
     int last_chunk_size = size_m - last_chunk;
 
     if (max_chunks) {
       gemm_half_q_half_cuda_part(a, b_q_weight, b_gptq_qzeros, b_gptq_scales,
                                  b_g_idx, c, last_chunk, size_n, size_k,
-                                 BLOCK_M_SIZE_MAX, groups, use_v2_format, bit);
+                                 rows_per_block, groups, use_v2_format, bit);
     }
 
     if (last_chunk_size) {
@@ -1832,7 +1859,12 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
                                 bool use_v2_format, int64_t bit) {
   const torch::stable::accelerator::DeviceGuard device_guard(
       a.get_device_index());
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  auto c = torch::stable::empty({a.size(0), b_q_weight.size(1)},
+                                a.scalar_type(), std::nullopt, a.device());
+#else
   auto c = torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)});
+#endif
   auto temp_dq =
       torch::stable::empty({b_q_weight.size(0) * 32 / bit, b_q_weight.size(1)},
                            a.scalar_type(), std::nullopt, a.device());
@@ -1843,6 +1875,9 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
       (const uint32_t*)b_gptq_qzeros.data_ptr(),
       (const half*)b_gptq_scales.data_ptr(),
       b_g_idx.device().type() == torch::stable::DeviceType::Meta
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+              || b_g_idx.numel() == 0
+#endif
           ? NULL
           : (const int*)b_g_idx.data_ptr(),
       (half*)c.data_ptr(), (half*)temp_dq.data_ptr(),

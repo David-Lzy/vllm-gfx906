@@ -1199,6 +1199,13 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
 
   message(STATUS "Enabling C_stable extension.")
   list(REMOVE_DUPLICATES VLLM_STABLE_EXT_SRC)
+  option(VLLM_GFX906_LEGACY_QGEMM
+    "Enable the legacy W4A16 QGEMM/QDQ composition for a gfx906-only HIP build"
+    OFF)
+  set(VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK "8" CACHE STRING
+    "Rows per legacy gfx906 W4A16 QGEMM block (4 or 8)")
+  set(VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK "0" CACHE STRING
+    "Override rows for exact-M8 legacy gfx906 W4A16 QGEMM blocks (0 or 4)")
   define_extension_target(
     _C_stable_libtorch
     DESTINATION vllm
@@ -1241,6 +1248,29 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
       CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
   elseif(VLLM_GPU_LANG STREQUAL "HIP")
     target_compile_definitions(_C_stable_libtorch PRIVATE USE_ROCM)
+    if(VLLM_GFX906_LEGACY_QGEMM)
+      if(NOT VLLM_GPU_ARCHES STREQUAL "gfx906")
+        message(FATAL_ERROR
+          "VLLM_GFX906_LEGACY_QGEMM requires exactly one target: gfx906")
+      endif()
+      if(NOT VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK MATCHES "^(4|8)$")
+        message(FATAL_ERROR
+          "VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK must be 4 or 8")
+      endif()
+      if(NOT VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK MATCHES "^(0|4)$")
+        message(FATAL_ERROR
+          "VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK must be 0 or 4")
+      endif()
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_GFX906_LEGACY_QGEMM=1
+        VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK=${VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK})
+      if(NOT VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK STREQUAL "0")
+        target_compile_definitions(_C_stable_libtorch PRIVATE
+          VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK=${VLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK})
+      endif()
+      message(STATUS
+        "Enabling gfx906 legacy QGEMM/QDQ composition with ${VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK} rows per block")
+    endif()
     if(FUSED_KDA_DECODE_HIP_SRC)
       target_compile_definitions(_C_stable_libtorch PRIVATE
         VLLM_ENABLE_FUSED_KDA_DECODE=1)
