@@ -43,6 +43,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.8 packed-INT8 embedding port](phase-119-v028-qwen38-int8-embedding-port.md)
 - [Qwen3.8 packed-INT8 rule-precedence screen](phase-120-v028-qwen38-int8-rule-precedence.md)
 - [Qwen3.8 packed-INT8 GDN-mapper control](phase-121-v028-qwen38-int8-mapper-ab.md)
+- [Qwen3.8 packed-INT8 loader parity](phase-122-v028-qwen38-int8-loader-parity.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
