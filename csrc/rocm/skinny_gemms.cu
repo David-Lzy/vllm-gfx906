@@ -316,6 +316,145 @@ torch::Tensor LLMM1(at::Tensor& in_a, at::Tensor& in_b,
   return out_c;
 }
 
+// Batches up to four activation rows in one block. The weight fragment is
+// fetched once and reused across the four reductions; a second y-grid slice
+// handles batches five through eight. This avoids the gfx906 wvSplitK atomic
+// reduction for small batched vocabulary heads.
+template <typename scalar_t, int NUM_A_ROWS_PER_BLOCK, int BATCH_SIZE>
+__global__ void LLGemmB4_kernel(const scalar_t* in_a, const scalar_t* in_b,
+                                scalar_t* out_c, const int K, const int M,
+                                const int N) {
+  using scalar2_t = typename scalar2<scalar_t>::type;
+  auto af4 = reinterpret_cast<const float4*>(in_a);
+  auto c = reinterpret_cast<scalar2_t*>(out_c);
+  constexpr int PAIRS_PER_THREAD = 4;
+  const int batch_start = blockIdx.y * BATCH_SIZE;
+  __shared__ float red_smem[BATCH_SIZE][NUM_A_ROWS_PER_BLOCK][WARP_SIZE];
+  const int row_addr = blockIdx.x * NUM_A_ROWS_PER_BLOCK * K / 8;
+  const int threadid = threadIdx.x;
+  const int warp = threadIdx.x / WARP_SIZE;
+  const int lane = threadIdx.x % WARP_SIZE;
+  const int num_warps = blockDim.x / WARP_SIZE;
+  const int qwarpid = threadid / 16;
+  const int qthreadid = threadid % 16;
+  float4 row_a[NUM_A_ROWS_PER_BLOCK];
+  scalar2_t col_b[BATCH_SIZE][PAIRS_PER_THREAD] = {};
+  float acc[BATCH_SIZE][NUM_A_ROWS_PER_BLOCK] = {};
+
+  if (threadid * 8 < K) {
+#pragma unroll
+    for (int i = 0; i < NUM_A_ROWS_PER_BLOCK; ++i) {
+      row_a[i] = load_ntmprl(&af4[row_addr + threadid + K / 8 * i]);
+    }
+#pragma unroll
+    for (int batch = 0; batch < BATCH_SIZE; ++batch) {
+      const int batch_idx = batch_start + batch;
+      if (batch_idx < N) {
+        auto bf4 = reinterpret_cast<const scalar2_t*>(in_b + batch_idx * K);
+        col_b[batch][0] = bf4[threadid * PAIRS_PER_THREAD + 0];
+        col_b[batch][1] = bf4[threadid * PAIRS_PER_THREAD + 1];
+        col_b[batch][2] = bf4[threadid * PAIRS_PER_THREAD + 2];
+        col_b[batch][3] = bf4[threadid * PAIRS_PER_THREAD + 3];
+      }
+    }
+  }
+
+  auto a_pairs = reinterpret_cast<scalar2_t*>(&row_a);
+#pragma unroll
+  for (int batch = 0; batch < BATCH_SIZE; ++batch) {
+    const int batch_idx = batch_start + batch;
+    if (batch_idx < N) {
+#pragma unroll
+      for (int i = 0; i < NUM_A_ROWS_PER_BLOCK; ++i) {
+        auto a_row = a_pairs + i * PAIRS_PER_THREAD;
+        scalar2_t pair = *a_row;
+        scalar2_t product = __hmul2(pair, col_b[batch][0]);
+        pair = *(a_row + 1);
+        product = __hfma2(pair, col_b[batch][1], product);
+        pair = *(a_row + 2);
+        product = __hfma2(pair, col_b[batch][2], product);
+        pair = *(a_row + 3);
+        product = __hfma2(pair, col_b[batch][3], product);
+        float2 sum = __s22float2(product);
+        acc[batch][i] = threadid * 8 < K ? sum.x + sum.y : 0.f;
+      }
+    }
+  }
+
+#pragma unroll
+  for (int mask = WARP_SIZE / 2; mask >= 1; mask /= 2) {
+#pragma unroll
+    for (int batch = 0; batch < BATCH_SIZE; ++batch) {
+#pragma unroll
+      for (int i = 0; i < NUM_A_ROWS_PER_BLOCK; ++i) {
+        acc[batch][i] += __shfl_xor(acc[batch][i], mask);
+      }
+    }
+  }
+
+  if (lane < NUM_A_ROWS_PER_BLOCK) {
+#pragma unroll
+    for (int batch = 0; batch < BATCH_SIZE; ++batch) {
+      red_smem[batch][lane][warp] = acc[batch][lane];
+    }
+  }
+  __syncthreads();
+
+  if (qwarpid < NUM_A_ROWS_PER_BLOCK) {
+#pragma unroll
+    for (int batch = 0; batch < BATCH_SIZE; ++batch) {
+      const int batch_idx = batch_start + batch;
+      if (batch_idx < N) {
+        acc[batch][qwarpid] = qthreadid < num_warps
+                                  ? red_smem[batch][qwarpid][qthreadid]
+                                  : 0.f;
+#pragma unroll
+        for (int mask = 16 / 2; mask >= 1; mask /= 2) {
+          acc[batch][qwarpid] += __shfl_xor(acc[batch][qwarpid], mask);
+        }
+        const float oval2 = __shfl_xor(acc[batch][qwarpid], 16);
+        if (lane % 32 == 0) {
+          const auto oval = __float22s2_rn<scalar2_t>(
+              make_float2(acc[batch][qwarpid], oval2));
+          c[batch_idx * M / 2 + blockIdx.x * NUM_A_ROWS_PER_BLOCK / 2 +
+            qwarpid / 2] = oval;
+        }
+      }
+    }
+  }
+}
+
+torch::Tensor LLMMB4(at::Tensor& in_a, at::Tensor& in_b) {
+  const auto M = in_a.size(0);
+  const auto K = in_a.size(1);
+  const auto N = in_b.size(0);
+
+  TORCH_CHECK(N > 1 && N <= 8,
+              "Activation batch size must be in [2, 8].");
+  TORCH_CHECK(in_a.dtype() == in_b.dtype());
+  TORCH_CHECK(in_b.dtype() == torch::kFloat16 ||
+              in_b.dtype() == torch::kBFloat16);
+  TORCH_CHECK(K % 8 == 0, "K must be divisible by 8.");
+  TORCH_CHECK(M % 4 == 0, "M must be divisible by 4.");
+
+  auto out_c = torch::empty(
+      {N, M}, torch::TensorOptions().dtype(in_b.dtype()).device(in_b.device()));
+  const int num_threads =
+      max(64, K * 2 / 16 % WARP_SIZE == 0
+                  ? K * 2 / 16
+                  : K * 2 / 16 + (WARP_SIZE - K * 2 / 16 % WARP_SIZE));
+  const dim3 grid(M / 4, (N + 3) / 4);
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(in_b));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  AT_DISPATCH_REDUCED_FLOATING_TYPES(in_b.scalar_type(), "LLGemmB4", [&] {
+    LLGemmB4_kernel<scalar_t, 4, 4><<<grid, num_threads, 0, stream>>>(
+        in_a.data_ptr<scalar_t>(), in_b.data_ptr<scalar_t>(),
+        out_c.data_ptr<scalar_t>(), K, M, N);
+  });
+  return out_c;
+}
+
 #if defined(__HIP__GFX9__) && !defined(__HIP__GFX1X__)
   #define DOT2C(V0, V2, V3)                                          \
     if constexpr (std::is_same_v<scalar_t, half>) {                  \

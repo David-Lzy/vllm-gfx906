@@ -116,7 +116,13 @@ def use_aiter_triton_gemm(n, m, k, dtype):
 def rocm_unquantized_gemm_impl(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
-    from vllm.platforms.rocm import on_gfx1x, on_gfx9, on_gfx950, on_gfx1250
+    from vllm.platforms.rocm import (
+        on_gfx1x,
+        on_gfx9,
+        on_gfx906,
+        on_gfx950,
+        on_gfx1250,
+    )
 
     n = x.numel() // x.size(-1)
     m = weight.shape[0]
@@ -174,7 +180,7 @@ def rocm_unquantized_gemm_impl(
 
     use_skinny = (
         envs.VLLM_ROCM_USE_SKINNY_GEMM
-        and (on_gfx9() or on_gfx1x())
+        and (on_gfx9() or on_gfx1x() or on_gfx906())
         # build (gfx9/gfx11 ISA); fall back to torch GEMM there.
         # TODO GFX1250: Include once skinny GEMM is supported on gfx1250
         and x.dtype in [torch.float16, torch.bfloat16]
@@ -186,12 +192,27 @@ def rocm_unquantized_gemm_impl(
         # The skinny kernels assume contiguous K elements. A shape-preserving
         # reshape can retain a transposed activation's non-contiguous strides.
         x_view = x.reshape(-1, x.size(-1)).contiguous()
-        if m > 8 and 0 < n <= 5:
+        # MI50's legacy C++ matrix-vector kernel is substantially faster than
+        # the generic rocBLAS path for single-token vocabulary logits.
+        if on_gfx906() and m % 4 == 0 and n == 1 and k <= 8192 and bias is None:
+            out = ops.LLMM1(weight, x_view, 4)
+            return out.reshape(*x.shape[:-1], weight.shape[0])
+        if (
+            on_gfx906()
+            and m % 4 == 0
+            and 1 < n <= 8
+            and k <= 8192
+            and bias is None
+            # The fused B4 kernel wins for Qwen's 4096-wide projections and
+            # large vocabulary heads. It loses to rocBLAS for the 12288-wide
+            # MLP gate/up projection at N=5..8.
+            and (n <= 4 or m <= 8192 or m >= 65536)
+        ):
+            out = ops.LLMMB4(weight, x_view)
+            return out.reshape(*x.shape[:-1], weight.shape[0])
+        if m > 8 and 0 < n <= 5 and (on_gfx9() or on_gfx1x()):
             cu_count = num_compute_units()
             out = ops.wvSplitK(weight, x_view, cu_count, bias)
-            return out.reshape(*x.shape[:-1], weight.shape[0])
-        elif m % 4 == 0 and n == 1 and k <= 8192 and bias is None:
-            out = ops.LLMM1(weight, x_view, 4)
             return out.reshape(*x.shape[:-1], weight.shape[0])
 
     if rocm_aiter_ops.is_tgemm_enabled():
