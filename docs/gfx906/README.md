@@ -51,6 +51,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.5 packed-INT8 C1 attribution](phase-127-v028-qwen35-packed-int8-c1-attribution.md)
 - [Qwen3.6 MRoPE fusion backport screen](phase-128-qwen36-mrope-fusion-v028.md)
 - [Triton 3.6 conditional-pointer intersection](phase-129-triton36-scf-pointer-intersection.md)
+- [Qwen3.5 multimodal truncation and profiling](phase-131-qwen35-mm-truncation-profiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
