@@ -20,6 +20,7 @@ RESULT_ROOT="$PHASE_ROOT/results/$(date -u +%Y%m%dT%H%M%SZ)"
 WHEEL_DIR="$BUILD_ROOT/phase-129-triton36-scf-pointer/wheel"
 WHEEL="$WHEEL_DIR/triton-3.6.0-cp312-cp312-linux_x86_64.whl"
 MODEL_DIR="$BUILD_ROOT/phase-125-v028-qwen36-packed-int8-tp4/models/qwen36-embed-lmhead-int8"
+SOURCE_MODEL_DIR="$BUILD_ROOT/phase-91-qwen36-tp4-mtp-parity/models/qwen36-awq-int4"
 BASE_IMAGE=${BASE_IMAGE:-local/vllm-gfx906:v0.28.0-phase123-qwen38-int8-semantic}
 CANDIDATE_IMAGE=${CANDIDATE_IMAGE:-local/vllm-gfx906:v0.28.0-phase135-qwen36-packed-fused}
 MODEL_ID=qwen36-phase135-packed-int8-tp4
@@ -36,6 +37,7 @@ require_file() {
 
 require_file "$WHEEL"
 require_file "$MODEL_DIR/config.json"
+require_file "$SOURCE_MODEL_DIR/config.json"
 require_file "$PRODUCTION_COMPOSE_FILE"
 require_file "$PRODUCTION_ENV_FILE"
 
@@ -101,6 +103,12 @@ wait_for_health() {
     local deadline=$((SECONDS + 1800))
     until curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" \
         >"$RESULT_ROOT/${ACTIVE_CONTAINER}-health.txt"; do
+        if [[ "$(docker inspect -f '{{.State.Running}}' "$ACTIVE_CONTAINER" 2>/dev/null || true)" != "true" ]]; then
+            docker logs "$ACTIVE_CONTAINER" >"$RESULT_ROOT/${ACTIVE_CONTAINER}-startup.log" 2>&1 || true
+            docker inspect "$ACTIVE_CONTAINER" >"$RESULT_ROOT/${ACTIVE_CONTAINER}-inspect.json" 2>&1 || true
+            echo "candidate exited before becoming healthy" >&2
+            return 1
+        fi
         (( SECONDS < deadline )) || {
             docker logs "$ACTIVE_CONTAINER" >"$RESULT_ROOT/${ACTIVE_CONTAINER}-startup.log" 2>&1 || true
             echo "candidate did not become healthy" >&2
@@ -121,7 +129,7 @@ run_variant() {
     mkdir -p "$variant_dir" "$cache_dir" "$triton_dir"
     ACTIVE_CONTAINER=$container
 
-    docker run -d --rm --name "$container" --network host --ipc host \
+    docker run -d --name "$container" --network host --ipc host \
         --shm-size 64g --device /dev/kfd --device /dev/dri --group-add video \
         -e HIP_VISIBLE_DEVICES=0,1,2,3 \
         -e PYTORCH_ROCM_ARCH=gfx906 -e ROCM_ARCH=gfx906 -e ROCM_PATH=/opt/rocm \
@@ -132,7 +140,8 @@ run_variant() {
         -e VLLM_ROCM_ENABLE_GFX906_SPLITKV=1 -e VLLM_ROCM_GFX906_SPLITKV_DEBUG=0 \
         -e VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS=8 -e VLLM_ROCM_USE_AITER=0 \
         -e TRITON_CACHE_DIR=/root/.triton/cache -e VLLM_CACHE_ROOT=/root/.cache/vllm \
-        -v "$MODEL_DIR:/model:ro" -v "$cache_dir:/root/.cache/vllm" \
+        -v "$MODEL_DIR:/model:ro" -v "$SOURCE_MODEL_DIR:/source:ro" \
+        -v "$cache_dir:/root/.cache/vllm" \
         -v "$triton_dir:/root/.triton/cache" --entrypoint /bin/bash "$image" \
         -lc "exec /opt/vllm-venv/bin/vllm serve /model \\
           --host 127.0.0.1 --port $port --served-model-name $MODEL_ID \\
