@@ -35,8 +35,9 @@ The standard Qwen3.8 AWQ checkpoint is functional in v0.28 TP4. A distinct
 copy-on-write Qwen3.8 checkpoint quantizes only its embedding and output head
 to packed INT8. Its initial v0.28 load exposed a narrow model-construction
 gap: `Qwen3_5Model` did not pass its compressed-tensors configuration to the
-embedding layer, so the expected packed parameter was never created. That
-loader fix and its isolated TP2 verification are tracked separately; this
+embedding layer, so the expected packed parameter was never created. Phase 119
+restored that construction and proved the checkpoint can load, but rejected the
+candidate after text, image, and JSON quality all failed. This standard-AWQ
 baseline remains valid regardless of that optional checkpoint.
 
 The temporary TP4 server was removed and the Qwen3.5 production Router and

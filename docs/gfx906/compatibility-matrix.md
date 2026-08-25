@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; optional packed-INT8 embedding/head profile needs a narrow loader port |
+| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; optional packed-INT8 embedding/head profile loads but fails output quality even after an isolated rule-order screen |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -85,5 +85,10 @@ same MI50 hardware. It is not a production recommendation.
   `52.65/216.53/17.21 tok/s`; standard Qwen3.8 reached
   `52.13/217.75/17.32 tok/s`. Both passed text, one/two 256-square image, and
   JSON 3/3 gates with drained metrics and empty fatal scans. The optional
-  Qwen3.8 packed-INT8 embedding/head checkpoint is tracked separately because
-  v0.28 initially omitted the compressed-embedding constructor wiring.
+  Qwen3.8 packed-INT8 embedding/head checkpoint is tracked separately. Phase
+  119 restored its initial compressed-embedding construction wiring, but the
+  loaded candidate produced malformed text, image, and JSON responses, so it
+  is not a compatible v0.28 profile yet. Phase 120 then reordered the
+  checkpoint's two packed-INT8 rules before its broad AWQ `Linear` rule without
+  touching a weight or source line. It reached health but reproduced the same
+  malformed outputs, rejecting rule precedence as the cause.
