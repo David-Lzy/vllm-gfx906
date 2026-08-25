@@ -128,6 +128,8 @@ if TYPE_CHECKING:
     VLLM_ROCM_ENABLE_GFX906_SPLITKV: bool = False
     VLLM_ROCM_GFX906_SPLITKV_DEBUG: bool = False
     VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS: Literal["8", "16"] = "16"
+    VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS: str = ""
+    VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS: str = ""
     VLLM_USE_HW_AGNOSTIC: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_GDN_DECODE_KERNEL: Literal["cuda", "triton"] = "cuda"
@@ -1220,6 +1222,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Qwen 27B's six-query-heads-per-KV-head geometry can use an 8-row tile.
     "VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS": env_with_choices(
         "VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS", "16", ["8", "16"]
+    ),
+    # Bounded experimental controls for the opt-in gfx906 SplitKV launcher.
+    # They are ignored unless VLLM_ROCM_ENABLE_GFX906_SPLITKV is also enabled.
+    "VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS": lambda: os.getenv(
+        "VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS", ""
+    ),
+    "VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS": lambda: os.getenv(
+        "VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS", ""
     ),
     # Selects hw-agnostic layers for HF transformer backend
     "VLLM_USE_HW_AGNOSTIC": lambda: (
