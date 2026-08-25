@@ -38,6 +38,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Phase 69 exact-M8 legacy QGEMM remaining-row sweep](phase-69-gfx906-qgemm-m8-row-sweep.md)
 - [v0.28 Qwen3.6 SplitKV parity](phase-115-v028-qwen36-splitkv-parity.md)
 - [v0.28 Qwen3.5 Router canary](phase-116-v028-qwen35-router-canary.md)
+- [v0.28 Qwen3.5 same-GPU residual attribution](phase-117-v028-qwen35-router-residual-attribution.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
