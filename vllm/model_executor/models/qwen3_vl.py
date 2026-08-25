@@ -1293,6 +1293,7 @@ class Qwen3VLMultiModalProcessor(BaseMultiModalProcessor[Qwen3VLProcessingInfo])
             prompt: str,
             mm_data: Mapping[str, object],
             mm_kwargs: Mapping[str, object],
+            tok_kwargs: Mapping[str, object],
         ) -> BatchFeature:
             # vLLM enforces max_model_len itself, and HF-side truncation of a
             # prompt whose placeholders were expanded to per-item feature
@@ -1305,12 +1306,12 @@ class Qwen3VLMultiModalProcessor(BaseMultiModalProcessor[Qwen3VLProcessingInfo])
                 return self.info.ctx.call_hf_processor(
                     self.info.get_hf_processor(**mm_kwargs),
                     dict(text=prompt),
-                    mm_kwargs,
+                    dict(mm_kwargs, **tok_kwargs),
                 )
             return self.info.ctx.call_hf_processor(
                 self.info.get_hf_processor(**mm_kwargs),
                 dict(text=prompt, **mm_data),
-                dict(mm_kwargs, truncation=False),
+                dict(dict(mm_kwargs, **tok_kwargs), truncation=False),
             )
 
         # Separate video processing from image processing. Because the videos
