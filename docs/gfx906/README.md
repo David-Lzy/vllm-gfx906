@@ -1,21 +1,23 @@
 # AMD gfx906 support
 
 This directory tracks the MI50/MI60 (`gfx906`) maintenance work for this fork.
-The project targets a validated vLLM v0.26 release while keeping the existing
-production-compatible branch available for rollback.
+It contains the public evidence for the active experimental v0.27-era line as
+well as the earlier v0.26 integration record. Historical version targets are
+kept so a result can be compared with its actual source base.
 
 ## Status
 
-- Validated production lineage: `gfx906/v0.23.1rc0.x`
-- Integration target: upstream `v0.26.0`
+- Validated reference lineage: `gfx906/v0.23.1rc0.x`
+- Active experimental line: v0.27 gfx906 work with retained, narrow patches
+- Historical integration target: upstream `v0.26.0`
 - Primary parity model: Qwen3.5 9B AWQ multimodal
 - Target hardware: four AMD MI50 GPUs, tested as independent TP1 workers and,
   where required, TP4
 - Release policy: `main` receives only versions validated on real gfx906
-  hardware
+  hardware and reviewed with a reproducible canary/rollback record
 
-The v0.26 work is experimental until the release and production-canary gates
-are complete. Model weights, caches, build outputs, credentials, and
+This work remains experimental until the matching release and production-canary
+gates are complete. Model weights, caches, build outputs, credentials, and
 machine-specific deployment configuration do not belong in this repository.
 
 ## Documents
@@ -42,10 +44,12 @@ machine-specific deployment configuration do not belong in this repository.
 
 ## Priorities
 
-1. Build stock v0.26 for gfx906 and establish a text-only floor.
-2. Restore Qwen3.5 AWQ multimodal parity.
-3. Prevent performance regressions against the validated production lineage.
-4. Port optional DFlash, MoE, TurboQuant KV, and FP8 KV features separately.
+1. Preserve Qwen3.5 AWQ text and multimodal parity on the active gfx906 line.
+2. Prevent performance regressions against the validated reference lineage.
+3. Keep Qwen3.8 27B compatibility and throughput work isolated from the
+   small-model production path.
+4. Evaluate optional DFlash, MoE, TurboQuant KV, and FP8 KV features only with
+   their own correctness and MI50 performance evidence.
 5. Publish a reproducible image only after hardware validation and canary soak.
 
 The v0.27 work is a separate exploration track. It first evaluates narrowly
