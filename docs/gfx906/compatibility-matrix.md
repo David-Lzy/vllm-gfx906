@@ -59,8 +59,13 @@ same MI50 hardware. It is not a production recommendation.
 - Qwen3.6 27B AWQ and Qwen3.8 27B AWQ each passed GPU2/GPU3 TP2 text,
   one/two 256-square image, and JSON 3/3 gates with drained metrics and no
   fatal error signature.
-- This establishes model compatibility, not long-context performance. The
-  historical gfx906 SplitKV selector was removed by the v0.28 paged-decode
-  refactor, so the 27B screen used the generic Triton paged-attention fallback.
-  Restoring that opt-in path is tracked separately before making any throughput
-  claim for 27B on v0.28.
+- The v0.28 paged-decode refactor had removed the historical gfx906 SplitKV
+  selector and left Qwen 27B on generic Triton paged attention. Phase 114
+  restored a default-off, head-256-only SplitKV path for the compatible hybrid
+  KV layout. On Qwen3.8 TP2, a matched 32K cache-hit fixed-128 decode improved
+  from 2.55 to 12.28 tok/s (+382%). The same profile improved short fixed-128
+  C1 from 42.24 to 44.08 tok/s (+4.4%) and C8 from 153.09 to 159.53 tok/s
+  (+4.2%).
+- The opt-in passed final text, one/two 256-square image, and JSON 3/3 gates.
+  It is retained for v0.28 Qwen 27B development, not promoted as a production
+  default until a separate model and serving canary is approved.
