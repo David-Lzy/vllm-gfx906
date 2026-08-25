@@ -655,13 +655,21 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
   const half* a_ptr = &block_a[0][0];
   int a_stride = BLOCK_KN_SIZE;
 
-  // Initial group
+  // The gfx906 legacy kernel needs FP32 accumulation for INT8 weights. The
+  // W4 path intentionally remains unchanged: this branch is only selected by
+  // the optional packed-INT8 embedding/LM-head profile.
   int zeros[4];
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+  float scales[4];
+  b_gptq_qzeros_.item4(zeros, group, n);
+  b_gptq_scales_.item4_f(scales, group, n);
+  float block_c[m_count][4] = {};
+#else
   half scales[4];
   b_gptq_qzeros_.item4(zeros, group, n);
   b_gptq_scales_.item4(scales, group, n);
-  // Column result
   half block_c[m_count][4] = {};
+#endif
 
   // Dequantize and multiply
   int k = offset_k;
@@ -670,7 +678,11 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
       group++;
       nextgroup += groupsize;
       b_gptq_qzeros_.item4(zeros, group, n);
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+      b_gptq_scales_.item4_f(scales, group, n);
+#else
       b_gptq_scales_.item4(scales, group, n);
+#endif
     }
 
 #pragma unroll
@@ -691,6 +703,19 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
       dequant_8bit_8(load_int4[0].w, load_int4[1].w, dq[3], size_n,
                      zeros[3] + zero_offset);
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+#pragma unroll
+      for (int m = 0; m < m_count; m++) {
+        block_c[m][0] = fma(dot22_8_f(dq[0], a_ptr + m * a_stride), scales[0],
+                            block_c[m][0]);
+        block_c[m][1] = fma(dot22_8_f(dq[1], a_ptr + m * a_stride), scales[1],
+                            block_c[m][1]);
+        block_c[m][2] = fma(dot22_8_f(dq[2], a_ptr + m * a_stride), scales[2],
+                            block_c[m][2]);
+        block_c[m][3] = fma(dot22_8_f(dq[3], a_ptr + m * a_stride), scales[3],
+                            block_c[m][3]);
+      }
+#else
       for (int m = 0; m < m_count; m++) {
         block_c[m][0] =
             dot22_8_h(dq[0], a_ptr + m * a_stride, block_c[m][0], scales[0]);
@@ -701,6 +726,7 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
         block_c[m][3] =
             dot22_8_h(dq[3], a_ptr + m * a_stride, block_c[m][3], scales[3]);
       }
+#endif
       a_ptr += 8;
     }
     k += 32;
@@ -708,8 +734,15 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
 
   for (int m = 0; m < m_count; m++) {
     half2* out = (half2*)c_.item_ptr(offset_m + m, n);
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+    half2 result01 = __halves2half2(__float2half_rn(block_c[m][0]),
+                                    __float2half_rn(block_c[m][1]));
+    half2 result23 = __halves2half2(__float2half_rn(block_c[m][2]),
+                                    __float2half_rn(block_c[m][3]));
+#else
     half2 result01 = __halves2half2(block_c[m][0], block_c[m][1]);
     half2 result23 = __halves2half2(block_c[m][2], block_c[m][3]);
+#endif
     atomicAdd(out, result01);
     atomicAdd(out + 1, result23);
   }
@@ -1873,8 +1906,13 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
   const torch::stable::accelerator::DeviceGuard device_guard(
       a.get_device_index());
 #if defined(VLLM_GFX906_LEGACY_QGEMM)
-  auto c = torch::stable::empty({a.size(0), b_q_weight.size(1)},
-                                a.scalar_type(), std::nullopt, a.device());
+  // The INT8 kernel accumulates partial K blocks with atomics. Unlike the
+  // W4 path, it has no safe in-kernel cross-block zeroing point, so make its
+  // output deterministically zeroed before the first atomic add.
+  auto c = bit == 8
+               ? torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)})
+               : torch::stable::empty({a.size(0), b_q_weight.size(1)},
+                                      a.scalar_type(), std::nullopt, a.device());
 #else
   auto c = torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)});
 #endif
