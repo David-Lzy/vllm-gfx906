@@ -8,7 +8,7 @@ kept so a result can be compared with its actual source base.
 ## Status
 
 - Validated reference lineage: `gfx906/v0.23.1rc0.x`
-- Active experimental line: v0.27 gfx906 work with retained, narrow patches
+- Active experimental line: v0.28 gfx906 work with retained, narrow patches
 - Historical integration target: upstream `v0.26.0`
 - Primary parity model: Qwen3.5 9B AWQ multimodal
 - Target hardware: four AMD MI50 GPUs, tested as independent TP1 workers and,
@@ -36,6 +36,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Phase 67 exact-M8 legacy QGEMM row-2 screen](phase-67-gfx906-legacy-qgemm-c8-row2-sweep.md)
 - [Phase 68 exact-M8 legacy QGEMM call attribution](phase-68-gfx906-qgemm-m8-call-attribution.md)
 - [Phase 69 exact-M8 legacy QGEMM remaining-row sweep](phase-69-gfx906-qgemm-m8-row-sweep.md)
+- [v0.28 Qwen3.6 SplitKV parity](phase-115-v028-qwen36-splitkv-parity.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
@@ -46,8 +47,8 @@ machine-specific deployment configuration do not belong in this repository.
 
 1. Preserve Qwen3.5 AWQ text and multimodal parity on the active gfx906 line.
 2. Prevent performance regressions against the validated reference lineage.
-3. Keep Qwen3.8 27B compatibility and throughput work isolated from the
-   small-model production path.
+3. Keep Qwen3.6/Qwen3.8 27B compatibility and throughput work isolated from
+   the small-model production path.
 4. Evaluate optional DFlash, MoE, TurboQuant KV, and FP8 KV features only with
    their own correctness and MI50 performance evidence.
 5. Publish a reproducible image only after hardware validation and canary soak.

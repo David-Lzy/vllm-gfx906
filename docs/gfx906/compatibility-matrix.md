@@ -58,7 +58,9 @@ same MI50 hardware. It is not a production recommendation.
   tok/s C1 and 264.60 tok/s synchronized C8 median.
 - Qwen3.6 27B AWQ and Qwen3.8 27B AWQ each passed GPU2/GPU3 TP2 text,
   one/two 256-square image, and JSON 3/3 gates with drained metrics and no
-  fatal error signature.
+  fatal error signature. With the restored SplitKV path, Qwen3.6 matched its
+  v0.27 reference or better: fixed-128 C1 `43.97 -> 44.74 tok/s` (+1.75%)
+  and 32K cache-hit decode `11.84 -> 12.27 tok/s` (+3.67%).
 - The v0.28 paged-decode refactor had removed the historical gfx906 SplitKV
   selector and left Qwen 27B on generic Triton paged attention. Phase 114
   restored a default-off, head-256-only SplitKV path for the compatible hybrid
