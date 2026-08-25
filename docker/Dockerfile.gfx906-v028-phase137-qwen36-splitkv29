@@ -1,8 +1,7 @@
 ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase114-qwen27-splitkv
 FROM ${BASE_IMAGE}
 
-# Phase 136 overlays only the default-off SplitKV launcher controls.  Compiled
-# gfx906 extensions and every unrelated v0.28 module remain from the base.
+# Phase 137 overlays only the bounded SplitKV selector used by Phase 136.
 COPY vllm/envs.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/envs.py
 COPY vllm/v1/attention/ops/chunked_prefill_paged_decode.py \
     /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/attention/ops/chunked_prefill_paged_decode.py

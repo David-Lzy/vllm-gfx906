@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# Run the reversible Phase 136 Qwen3.8 TP4 SplitKV 16-versus-29 A/B.
+# Run a reversible 27B TP4 SplitKV 16-versus-29 A/B.
+#
+# Defaults preserve the Phase 136 Qwen3.8 invocation. Later 27B portability
+# phases override only the phase identity, image, ports, and served model.
 set -euo pipefail
 
 : "${ALLOW_PRODUCTION_PAUSE:?set to 1 after confirming production is idle}"
@@ -8,7 +11,7 @@ set -euo pipefail
 : "${PRODUCTION_WORKDIR:?set the selected production Compose directory}"
 : "${PRODUCTION_COMPOSE_FILE:?set the selected production Compose file}"
 : "${PRODUCTION_ENV_FILE:?set the selected production env file}"
-: "${MODEL_DIR:?set the standard Qwen3.8 AWQ model directory}"
+: "${MODEL_DIR:?set the standard 27B AWQ model directory}"
 : "${FIXTURE:?set a readable 256-square image fixture}"
 
 if [[ "$ALLOW_PRODUCTION_PAUSE" != "1" ]]; then
@@ -18,12 +21,16 @@ fi
 
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-readonly PHASE_ROOT="$BUILD_ROOT/phase-136-qwen38-tp4-splitkv29-rebase"
+readonly PHASE_SLUG=${PHASE_SLUG:-phase-136-qwen38-tp4-splitkv29-rebase}
+readonly PHASE_LABEL=${PHASE_LABEL:-Phase 136 Qwen3.8 TP4 SplitKV}
+readonly PHASE_ROOT="$BUILD_ROOT/$PHASE_SLUG"
 readonly RESULT_ROOT="$PHASE_ROOT/results/$(date -u +%Y%m%dT%H%M%SZ)"
 readonly IMAGE=${IMAGE:-local/vllm-gfx906:v0.28.0-phase136-qwen38-splitkv29}
-readonly SERVED_MODEL=qwen38-phase136-splitkv-tp4
-readonly CONTROL_PORT=18136
-readonly CANDIDATE_PORT=18137
+readonly SERVED_MODEL=${SERVED_MODEL:-qwen38-phase136-splitkv-tp4}
+readonly CONTROL_PORT=${CONTROL_PORT:-18136}
+readonly CANDIDATE_PORT=${CANDIDATE_PORT:-18137}
+readonly CONTAINER_PREFIX=${CONTAINER_PREFIX:-vllm-gfx906-phase136}
+readonly DOCKERFILE=${DOCKERFILE:-docker/Dockerfile.gfx906-v028-phase136-qwen38-splitkv29}
 
 ACTIVE_CONTAINER=
 PRODUCTION_RESTORED=0
@@ -51,7 +58,7 @@ capture_idle_preflight() {
         exit 3
     fi
     if systemctl is-active --quiet someai-pexels-video-indexer.service; then
-        echo "Pexels indexer is active; refusing all-GPU Phase 136" >&2
+        echo "Pexels indexer is active; refusing all-GPU $PHASE_LABEL" >&2
         exit 3
     fi
     if [[ -n "${XMR_PID:-}" ]]; then
@@ -166,8 +173,8 @@ run_gates() {
     local directory=$2
     local image_b64 text_payload image1_payload image2_payload json_payload content index
     image_b64="$(base64 -w0 "$FIXTURE")"
-    text_payload="$(jq -nc --arg model "$SERVED_MODEL" \
-        '{model:$model,temperature:0,max_tokens:32,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:"Reply exactly: phase 136 text smoke passed"}]}')"
+    text_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg phase_label "$PHASE_LABEL" \
+        '{model:$model,temperature:0,max_tokens:32,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:("Reply exactly: "+$phase_label+" text smoke passed")}]}')"
     image1_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg b64 "$image_b64" \
         '{model:$model,temperature:0,max_tokens:48,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:[{type:"text",text:"Describe this image in one sentence."},{type:"image_url",image_url:{url:("data:image/png;base64,"+$b64)}}]}]}')"
     image2_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg b64 "$image_b64" \
@@ -288,7 +295,7 @@ run_variant() {
     local forced_splits=$4
     local directory="$RESULT_ROOT/$variant"
     local cache_dir="$PHASE_ROOT/cache/$variant"
-    local container="vllm-gfx906-phase136-$variant"
+    local container="$CONTAINER_PREFIX-$variant"
     local started elapsed
     mkdir -p "$directory" "$cache_dir/triton-cache"
     ACTIVE_CONTAINER="$container"
@@ -337,7 +344,7 @@ run_variant() {
 }
 
 capture_idle_preflight
-docker build -f "$REPO_ROOT/docker/Dockerfile.gfx906-v028-phase136-qwen38-splitkv29" \
+docker build -f "$REPO_ROOT/$DOCKERFILE" \
     -t "$IMAGE" "$REPO_ROOT" >"$RESULT_ROOT/image-build.log" 2>&1
 (
     cd "$PRODUCTION_WORKDIR"
