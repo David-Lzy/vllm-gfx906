@@ -92,7 +92,8 @@ same MI50 hardware. It is not a production recommendation.
   checkpoint's two packed-INT8 rules before its broad AWQ `Linear` rule without
   touching a weight or source line. It reached health but reproduced the same
   malformed outputs, rejecting rule precedence as the cause. Phase 121 then
-  tested removal of the v0.28 Qwen3.5 weight mapper. It failed before health:
-  the current fused GDN model has no destination for the checkpoint's separate
-  `linear_attn.in_proj_a` key without that mapping. Mapper removal is therefore
-  rejected as structurally incompatible, not merely slower.
+  removed the shared Qwen GDN stacked-weight mapper as a control. It failed
+  before health because neither v0.27 nor v0.28 can load the checkpoint's
+  separate `linear_attn.in_proj_a` key without mapping it into the fused GDN
+  module. The control confirms that mapper is required, but is not a
+  v0.27-to-v0.28 explanation.
