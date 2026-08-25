@@ -158,6 +158,7 @@ LinearBackend = Literal[
     "fbgemm",
     "conch",
     "exllama",
+    "gfx906_gptq",
     "emulation",
     "xpu",
     "xpu_woq",
