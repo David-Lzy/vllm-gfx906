@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; optional packed-INT8 embedding/head profile loads but fails output quality even after an isolated rule-order screen |
+| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -84,16 +84,11 @@ same MI50 hardware. It is not a production recommendation.
   baseline. Qwen3.6 reached fixed-128 C1/C8/32K-cache medians of
   `52.65/216.53/17.21 tok/s`; standard Qwen3.8 reached
   `52.13/217.75/17.32 tok/s`. Both passed text, one/two 256-square image, and
-  JSON 3/3 gates with drained metrics and empty fatal scans. The optional
-  Qwen3.8 packed-INT8 embedding/head checkpoint is tracked separately. Phase
-  119 restored its initial compressed-embedding construction wiring, but the
-  loaded candidate produced malformed text, image, and JSON responses, so it
-  is not a compatible v0.28 profile yet. Phase 120 then reordered the
-  checkpoint's two packed-INT8 rules before its broad AWQ `Linear` rule without
-  touching a weight or source line. It reached health but reproduced the same
-  malformed outputs, rejecting rule precedence as the cause. Phase 121 then
-  removed the shared Qwen GDN stacked-weight mapper as a control. It failed
-  before health because neither v0.27 nor v0.28 can load the checkpoint's
-  separate `linear_attn.in_proj_a` key without mapping it into the fused GDN
-  module. The control confirms that mapper is required, but is not a
-  v0.27-to-v0.28 explanation.
+  JSON 3/3 gates with drained metrics and empty fatal scans. Phase 123 restored
+  FP32 accumulation for gfx906 INT8 GPTQ components. Phase 124 then validated
+  a packed-INT8 Qwen3.8 embedding/head profile at `+1.55%` C1 and `+2.10%` C8
+  versus its standard TP4 baseline. Phase 125 independently ported that
+  profile to Qwen3.6, passing the same multimodal/JSON gates and averaging
+  `+0.20%` C1 and `+4.24%` C8 against the Qwen3.6 standard-TP4 baseline.
+  Both packed profiles remain development-only until each has a separate
+  production model and serving canary rationale.
