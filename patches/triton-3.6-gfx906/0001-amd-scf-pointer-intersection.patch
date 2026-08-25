@@ -1,0 +1,90 @@
+From 93f6542ba328cff2e389dbf09f80afb8ea2737e2 Mon Sep 17 00:00:00 2001
+From: David-Lzy <li19931020li@gmail.com>
+Date: Wed, 26 Aug 2026 03:28:24 +0930
+Subject: [PATCH] amd: intersect fat-pointer attributes across control flow
+
+Assisted-by: Codex
+---
+ .../CanonicalizePointers.cpp                  | 44 ++++++++++++-------
+ 1 file changed, 29 insertions(+), 15 deletions(-)
+
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp
+index 4b8d932..02c44ef 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp
+@@ -470,6 +470,21 @@ struct FatPointers {
+       return !(lhs == rhs);
+     }
+ 
++    static FatPtrAttrs intersect(const FatPtrAttrs &lhs,
++                                 const FatPtrAttrs &rhs) {
++      FatPtrAttrs result;
++      result.canNarrow = lhs.canNarrow && rhs.canNarrow;
++      for (const auto &[name, attribute] : lhs.attributes) {
++        auto rhsAttribute = rhs.attributes.find(name);
++        if (rhsAttribute != rhs.attributes.end() &&
++            rhsAttribute->second == attribute)
++          result.attributes[name] = attribute;
++      }
++      if (lhs.smallTensorBase == rhs.smallTensorBase)
++        result.smallTensorBase = lhs.smallTensorBase;
++      return result;
++    }
++
+     llvm::DenseMap<StringRef, Attribute> attributes;
+     // If the fat-pointer points to somewhere in a small-tensor, keep track the
+     // base of the tensor.
+@@ -1370,12 +1385,10 @@ public:
+                                              selectOp.getCondition(),
+                                              fatPtrTrue[1], fatPtrFalse[1]);
+ 
+-    assert((fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]}) ==
+-            fatPtrs.at({fatPtrFalse[0], fatPtrFalse[1]})) &&
+-           "expected can narrow to be the same for both fatPtrT and fatPtrF");
+-
+     rewriter.replaceOpWithMultiple(selectOp, {{newBase, newOffset}});
+-    fatPtrs[{newBase, newOffset}] = fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]});
++    fatPtrs[{newBase, newOffset}] = FatPointers::FatPtrAttrs::intersect(
++        fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]}),
++        fatPtrs.at({fatPtrFalse[0], fatPtrFalse[1]}));
+ 
+     return success();
+   }
+@@ -1423,14 +1436,6 @@ public:
+           assert(i < ifOp.thenYield().getNumOperands() &&
+                  i + 1 < ifOp.thenYield().getNumOperands() &&
+                  "expected idx to be within bounds of IfOp's results");
+-          Value thenFatPtrBase = ifOp.thenYield().getOperand(i);
+-          Value thenFatPtrOffset = ifOp.thenYield().getOperand(i + 1);
+-          Value elseFatPtrBase = ifOp.elseYield().getOperand(i);
+-          Value elseFatPtrOffset = ifOp.elseYield().getOperand(i + 1);
+-          assert((fatPtrs.at({thenFatPtrBase, thenFatPtrOffset}) ==
+-                  fatPtrs.at({elseFatPtrBase, elseFatPtrOffset})) &&
+-                 "expected then fat ptr canNarrow and else fat ptr canNarrow "
+-                 "to be equal");
+         }
+       }
+     }
+@@ -1456,8 +1461,17 @@ public:
+     for (int64_t idx : yieldPtrOffsets) {
+       Value thenFatPtrBase = newIfOp.thenYield().getOperand(idx);
+       Value thenFatPtrOffset = newIfOp.thenYield().getOperand(idx + 1);
+-      fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
+-          fatPtrs.at({thenFatPtrBase, thenFatPtrOffset});
++      const auto &thenAttrs = fatPtrs.at({thenFatPtrBase, thenFatPtrOffset});
++      if (withElseRegion) {
++        Value elseFatPtrBase = newIfOp.elseYield().getOperand(idx);
++        Value elseFatPtrOffset = newIfOp.elseYield().getOperand(idx + 1);
++        const auto &elseAttrs = fatPtrs.at({elseFatPtrBase, elseFatPtrOffset});
++        fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
++            FatPointers::FatPtrAttrs::intersect(thenAttrs, elseAttrs);
++      } else {
++        fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
++            thenAttrs;
++      }
+     }
+ 
+     ResultRange results = newIfOp.getResults();
+-- 
+2.53.0
+
