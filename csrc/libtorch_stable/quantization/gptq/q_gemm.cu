@@ -73,6 +73,18 @@ __forceinline__ __device__ half2 dot22_8(half2 (&dq)[4], const half* a_ptr,
   return __hadd2(result, g_result);
 }
 
+#if defined(VLLM_GFX906_LEGACY_QGEMM)
+__forceinline__ __device__ float dot22_8_f(half2 (&dq)[4],
+                                           const half* a_ptr) {
+  float result = {};
+  const half2* a2_ptr = (const half2*)a_ptr;
+#pragma unroll
+  for (int i = 0; i < 4; i++) {
+    result = __ockl_fdot2(dq[i], *a2_ptr++, result, true);
+  }
+  return result;
+}
+#else
 __forceinline__ __device__ float dot22_8_f(half2 (&dq)[4], const half* a_ptr) {
   half2 result = {};
   const half2* a2_ptr = (const half2*)a_ptr;
@@ -80,6 +92,7 @@ __forceinline__ __device__ float dot22_8_f(half2 (&dq)[4], const half* a_ptr) {
   for (int i = 0; i < 4; i++) result = __hfma2(dq[i], *a2_ptr++, result);
   return __half2float(__low2half(result)) + __half2float(__high2half(result));
 }
+#endif
 
 __forceinline__ __device__ half2 dot22_8(half2 (&dq)[4], const half* a_ptr,
                                          const half2 g_result,
