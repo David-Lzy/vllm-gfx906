@@ -64,3 +64,30 @@ def test_gfx906_splitkv_avoids_extra_splits_when_batch_is_saturated(
         paged_decode.torch.accelerator, "current_device_index", lambda: 0
     )
     assert paged_decode._num_gfx906_splitkv_splits(8, 2, 32780, 16) == 1
+
+
+def test_gfx906_splitkv_uses_default_workspace_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS", raising=False)
+    monkeypatch.delenv("VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS", raising=False)
+    assert paged_decode._get_gfx906_splitkv_max_splits() == 16
+    assert paged_decode._get_gfx906_splitkv_forced_splits(16) is None
+
+
+def test_gfx906_splitkv_accepts_bounded_forced_partition_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS", "32")
+    monkeypatch.setenv("VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS", "29")
+    assert paged_decode._get_gfx906_splitkv_max_splits() == 32
+    assert paged_decode._get_gfx906_splitkv_forced_splits(32) == 29
+
+
+def test_gfx906_splitkv_rejects_invalid_partition_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS", "33")
+    monkeypatch.setenv("VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS", "29")
+    assert paged_decode._get_gfx906_splitkv_max_splits() == 16
+    assert paged_decode._get_gfx906_splitkv_forced_splits(16) is None

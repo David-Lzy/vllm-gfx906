@@ -24,6 +24,7 @@ logger = init_logger(__name__)
 float8_info = torch.finfo(current_platform.fp8_dtype())
 
 _MAX_GFX906_SPLITKV_SPLITS = 16
+_MAX_GFX906_SPLITKV_EXPERIMENTAL_SPLITS = 32
 _DEFAULT_GFX906_SPLITKV_BLOCK_SIZE = 32
 
 
@@ -69,6 +70,59 @@ def _get_gfx906_splitkv_query_rows(
     ):
         return 8
     return max(triton.next_power_of_2(num_queries_per_kv), 16)
+
+
+def _get_gfx906_splitkv_max_splits() -> int:
+    """Return the bounded SplitKV workspace cap for an opt-in gfx906 run."""
+    raw_value = envs.VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS.strip()
+    if not raw_value:
+        return _MAX_GFX906_SPLITKV_SPLITS
+
+    try:
+        max_splits = int(raw_value)
+    except ValueError:
+        logger.warning_once(
+            "Ignoring invalid VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS=%r; using %d.",
+            raw_value,
+            _MAX_GFX906_SPLITKV_SPLITS,
+        )
+        return _MAX_GFX906_SPLITKV_SPLITS
+
+    if not 1 <= max_splits <= _MAX_GFX906_SPLITKV_EXPERIMENTAL_SPLITS:
+        logger.warning_once(
+            "Ignoring VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS=%d outside [1, %d]; "
+            "using %d.",
+            max_splits,
+            _MAX_GFX906_SPLITKV_EXPERIMENTAL_SPLITS,
+            _MAX_GFX906_SPLITKV_SPLITS,
+        )
+        return _MAX_GFX906_SPLITKV_SPLITS
+    return max_splits
+
+
+def _get_gfx906_splitkv_forced_splits(max_splits: int) -> int | None:
+    """Return a validated experimental split count without changing kernel math."""
+    raw_value = envs.VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS.strip()
+    if not raw_value:
+        return None
+
+    try:
+        forced_splits = int(raw_value)
+    except ValueError:
+        logger.warning_once(
+            "Ignoring invalid VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS=%r.",
+            raw_value,
+        )
+        return None
+
+    if not 1 <= forced_splits <= max_splits:
+        logger.warning_once(
+            "Ignoring VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS=%d outside [1, %d].",
+            forced_splits,
+            max_splits,
+        )
+        return None
+    return forced_splits
 
 
 @triton.jit
@@ -593,16 +647,24 @@ def paged_attention_2d_gfx906_splitkv_decode(
     head_size = query.shape[2]
     physical_block_size = key_cache.shape[3]
     logical_block_size = _choose_gfx906_splitkv_block_size(physical_block_size)
+    max_num_splits = _get_gfx906_splitkv_max_splits()
     num_splits = _num_gfx906_splitkv_splits(
-        batch_size, num_kv_heads, max_seq_len, logical_block_size
+        batch_size,
+        num_kv_heads,
+        max_seq_len,
+        logical_block_size,
+        max_num_splits,
     )
+    forced_splits = _get_gfx906_splitkv_forced_splits(max_num_splits)
+    if forced_splits is not None:
+        num_splits = forced_splits
     query_rows = _get_gfx906_splitkv_query_rows(
         num_query_heads, num_kv_heads, head_size
     )
     if envs.VLLM_ROCM_GFX906_SPLITKV_DEBUG:
         logger.info_once(
             "gfx906 SplitKV decode: batch=%d kv_heads=%d seq_len=%d "
-            "physical_block=%d logical_block=%d rows=%d splits=%d",
+            "physical_block=%d logical_block=%d rows=%d splits=%d cap=%d forced=%s",
             batch_size,
             num_kv_heads,
             max_seq_len,
@@ -610,6 +672,8 @@ def paged_attention_2d_gfx906_splitkv_decode(
             logical_block_size,
             query_rows,
             num_splits,
+            max_num_splits,
+            forced_splits,
         )
 
     if num_splits == 1:
