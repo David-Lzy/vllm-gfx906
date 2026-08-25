@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase123-qwen38-int8-semantic
+FROM ${BASE_IMAGE}
+
+# The phase-129 wheel is supplied through a named build context. It carries
+# only the gfx906 conditional-pointer compiler fix needed by this fused path.
+COPY --from=triton-wheel triton-3.6.0-cp312-cp312-linux_x86_64.whl /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl
+
+# Keep the server image otherwise identical to the Phase 123 packed-INT8 base.
+COPY vllm/model_executor/layers/fused_qk_norm_rope.py /tmp/vllm-overlay/fused_qk_norm_rope.py
+COPY vllm/model_executor/models/qwen3_next.py /tmp/vllm-overlay/qwen3_next.py
+
+RUN /opt/vllm-venv/bin/python -m pip install --no-deps --force-reinstall \
+        /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl \
+    && cp /tmp/vllm-overlay/fused_qk_norm_rope.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/ \
+    && cp /tmp/vllm-overlay/qwen3_next.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/
