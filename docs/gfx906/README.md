@@ -71,3 +71,4 @@ The v0.27 work is a separate exploration track. It first evaluates narrowly
 selected upstream backports on the validated v0.26 gfx906 base, then addresses
 the Triton 3.7 gfx906 compiler gap. It does not authorize an automatic runtime
 upgrade or production replacement.
+ - [Phase 130: Qwen3.6 ROCm fused QK/RoPE dispatch](phase-130-qwen36-rocm-fused-qk-rope.md)
