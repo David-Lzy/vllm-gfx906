@@ -56,6 +56,12 @@ same MI50 hardware. It is not a production recommendation.
 - Qwen3.5 9B AWQ recovered the retained v0.27 fixed-128 reference after
   restoring narrow gfx906 output-head and W4A16 accumulation paths: 76.72
   tok/s C1 and 264.60 tok/s synchronized C8 median.
+- A real two-worker Router canary then passed text, one/two 256-square image,
+  JSON 3/3, idle-metric, and bounded fatal-log gates. It remained narrowly
+  below the v0.27 production baseline: C1 `77.53 -> 75.71 tok/s`, C8 aggregate
+  `420.26 -> 414.89 tok/s`, and C16 aggregate `527.99 -> 526.30 tok/s`.
+  v0.28 stays an active development line rather than a Qwen3.5 production
+  promotion candidate.
 - Qwen3.6 27B AWQ and Qwen3.8 27B AWQ each passed GPU2/GPU3 TP2 text,
   one/two 256-square image, and JSON 3/3 gates with drained metrics and no
   fatal error signature. With the restored SplitKV path, Qwen3.6 matched its
