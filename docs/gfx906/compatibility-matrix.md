@@ -91,4 +91,8 @@ same MI50 hardware. It is not a production recommendation.
   is not a compatible v0.28 profile yet. Phase 120 then reordered the
   checkpoint's two packed-INT8 rules before its broad AWQ `Linear` rule without
   touching a weight or source line. It reached health but reproduced the same
-  malformed outputs, rejecting rule precedence as the cause.
+  malformed outputs, rejecting rule precedence as the cause. Phase 121 then
+  tested removal of the v0.28 Qwen3.5 weight mapper. It failed before health:
+  the current fused GDN model has no destination for the checkpoint's separate
+  `linear_attn.in_proj_a` key without that mapping. Mapper removal is therefore
+  rejected as structurally incompatible, not merely slower.
