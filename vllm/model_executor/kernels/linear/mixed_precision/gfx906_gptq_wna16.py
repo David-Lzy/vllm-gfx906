@@ -17,7 +17,6 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.model_executor.parameter import BasevLLMParameter, permute_param_layout_
 from vllm.platforms import current_platform
-from vllm.platforms.rocm import on_gfx906
 from vllm.scalar_type import scalar_types
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
@@ -39,7 +38,13 @@ class Gfx906GPTQWNA16LinearKernel(MPLinearKernel):
 
     @classmethod
     def can_implement(cls, c: MPLinearLayerConfig) -> tuple[bool, str | None]:
-        if not current_platform.is_rocm() or not on_gfx906():
+        if not current_platform.is_rocm():
+            return False, "Gfx906GPTQWNA16LinearKernel is only enabled on gfx906"
+        # Importing rocm.py probes the active device, so defer it until a ROCm
+        # kernel is actually being considered rather than at package import time.
+        from vllm.platforms.rocm import on_gfx906
+
+        if not on_gfx906():
             return False, "Gfx906GPTQWNA16LinearKernel is only enabled on gfx906"
         if c.weight_type not in cls.SUPPORTED_QUANT_TYPES:
             return False, f"Unsupported quant type {c.weight_type}"
