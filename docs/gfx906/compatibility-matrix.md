@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains |
+| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains; the Qwen3.6 fused QK/RMSNorm/MRoPE/gate composition is a further provisional +0.85% C1 / +1.10% C8 TP4 result |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
