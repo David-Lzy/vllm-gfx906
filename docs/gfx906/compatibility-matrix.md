@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.27 TP2 at 100K passed text, image, JSON, no-MTP, and MTP1; MTP1 improved fixed-128 decode 54.6%, but it is not a production throughput candidate |
+| Secondary model | Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; optional packed-INT8 embedding/head profile needs a narrow loader port |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -80,3 +80,10 @@ same MI50 hardware. It is not a production recommendation.
 - The opt-in passed final text, one/two 256-square image, and JSON 3/3 gates.
   It is retained for v0.28 Qwen 27B development, not promoted as a production
   default until a separate model and serving canary is approved.
+- Phase 118 then established the all-GPU v0.28 TP4/no-MTP standard-AWQ
+  baseline. Qwen3.6 reached fixed-128 C1/C8/32K-cache medians of
+  `52.65/216.53/17.21 tok/s`; standard Qwen3.8 reached
+  `52.13/217.75/17.32 tok/s`. Both passed text, one/two 256-square image, and
+  JSON 3/3 gates with drained metrics and empty fatal scans. The optional
+  Qwen3.8 packed-INT8 embedding/head checkpoint is tracked separately because
+  v0.28 initially omitted the compressed-embedding constructor wiring.
