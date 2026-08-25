@@ -49,6 +49,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.6 packed-INT8 TP4 portability](phase-125-v028-qwen36-packed-int8-tp4.md)
 - [Qwen3.5 packed-INT8 TP1 portability](phase-126-v028-qwen35-packed-int8-tp1.md)
 - [Qwen3.5 packed-INT8 C1 attribution](phase-127-v028-qwen35-packed-int8-c1-attribution.md)
+- [Qwen3.6 MRoPE fusion backport screen](phase-128-qwen36-mrope-fusion-v028.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
 - [Benchmark protocol](benchmark-protocol.md)
