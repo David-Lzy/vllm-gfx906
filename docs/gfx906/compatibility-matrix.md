@@ -111,3 +111,11 @@ same MI50 hardware. It is not a production recommendation.
   matched 32K prefix-cache-hit decode from `18.04` to `20.47 tok/s` (+13.51%),
   with C1 effectively unchanged and C8 +1.78%. The option remains limited to
   compatible Qwen3.8 TP4 development profiles pending a dedicated canary.
+- Phase 137 ported that same bounded `cap=32, force=29` SplitKV profile to
+  standard Qwen3.6 27B AWQ TP4. It passed text, one/two 256-square image,
+  JSON `3/3`, drained-queue, and fatal-log gates. Fixed-128 C1 was effectively
+  unchanged (`52.904 -> 52.868 tok/s`, -0.07%), C8 improved
+  `206.923 -> 217.289 tok/s` (+5.01%), and paired 32K prefix-cache-hit decode
+  improved `17.784 -> 20.157 tok/s` (+13.34%). Retain it only as a compatible
+  Qwen3.6 TP4 development opt-in; it does not alter the Qwen3.5 production
+  Router or generic SplitKV defaults.
