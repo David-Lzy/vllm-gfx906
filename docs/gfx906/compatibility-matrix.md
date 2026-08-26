@@ -134,3 +134,12 @@ same MI50 hardware. It is not a production recommendation.
   `48.7565 tok/s` (-0.99%) and C8 from `211.5570` to `199.6205 tok/s`
   (-5.64%). The batch-sharded path is therefore evidence-only, not a Qwen3.6,
   Qwen3.8, or production profile candidate.
+- Phase 140 tested the generic Triton unified-attention long-prefill geometry
+  proposed in upstream issue `#52585`. On exact Qwen3.5 head-256 GQA tensors,
+  `BLOCK_M=64` improved 8K prefill latency from `463.9822` to `327.7984 ms`
+  (+29.35%) with matching FP16 tolerance. In the production-equivalent Qwen3.5
+  9B AWQ service, however, the selector was never invoked: Qwen3.5 uses hybrid
+  GDN and ROCm attention dispatches for this workload. Cache-busted service
+  prefill was effectively unchanged (`9.993731 -> 10.005731 s`, -0.12%). Text,
+  one/two 256-square image, and JSON `3/3` gates passed, but the change is
+  source-level evidence only and is not merged or promoted.
