@@ -143,3 +143,10 @@ same MI50 hardware. It is not a production recommendation.
   prefill was effectively unchanged (`9.993731 -> 10.005731 s`, -0.12%). Text,
   one/two 256-square image, and JSON `3/3` gates passed, but the change is
   source-level evidence only and is not merged or promoted.
+- Phase 141 tested a pure-Triton unified-attention substitution for the Qwen
+  27B full-attention decode route at the exact head-256, GQA 6:1, 784-token
+  hybrid-page, 32K, 29-split geometry. It was numerically compatible but its
+  per-layer median was `13.961 ms` versus `0.865 ms` for the retained gfx906
+  SplitKV control (`-1513.4%`). The generic replacement is rejected before any
+  server integration; the compatible SplitKV route remains the development
+  baseline for this path.
