@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains; the Qwen3.6 fused QK/RMSNorm/MRoPE/gate composition is a further provisional +0.85% C1 / +1.10% C8 TP4 result |
+| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains; the Qwen3.6 fused QK/RMSNorm/MRoPE/gate composition was provisionally positive at fixed-128 decode, while its SplitKV-29 composition is long-context-only after a +14.83% 32K result paired with a -6.77% C8 regression |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -119,3 +119,10 @@ same MI50 hardware. It is not a production recommendation.
   improved `17.784 -> 20.157 tok/s` (+13.34%). Retain it only as a compatible
   Qwen3.6 TP4 development opt-in; it does not alter the Qwen3.5 production
   Router or generic SplitKV defaults.
+- Phase 138 tested whether the Phase 135 packed/fused Qwen3.6 overlay and the
+  Phase 137 SplitKV-29 selection compose. It passed the routine text,
+  one/two-image, JSON, drained-queue, and fatal-log gates. The 32K
+  prefix-cache-hit median improved `17.979 -> 20.644 tok/s` (+14.83%), but C8
+  regressed `235.620 -> 219.663 tok/s` (-6.77%). Retain the composition only
+  as a Qwen3.6 packed-INT8 TP4 long-context development option; it is not a
+  common serving default and does not change Qwen3.5 production.
