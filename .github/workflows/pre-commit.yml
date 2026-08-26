@@ -49,6 +49,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      with:
+        fetch-depth: 0
     - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
       with:
         python-version: "3.12"
@@ -57,4 +59,9 @@ jobs:
     - run: echo "::add-matcher::.github/workflows/matchers/mypy.json"
     - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
       with:
-        extra_args: --all-files --hook-stage manual
+        extra_args: >-
+          ${{ github.event_name == 'pull_request' &&
+          format('--from-ref {0} --to-ref {1} --hook-stage manual',
+          github.event.pull_request.base.sha,
+          github.event.pull_request.head.sha) ||
+          '--all-files --hook-stage manual' }}
