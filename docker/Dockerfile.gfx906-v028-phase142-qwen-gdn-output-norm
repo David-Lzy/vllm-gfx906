@@ -1,0 +1,10 @@
+ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase138-qwen36-packed-fused-splitkv29
+FROM ${BASE_IMAGE}
+
+# Phase 142 is a default-off ROCm/gfx906 GDN output-normalization overlay.
+COPY vllm/envs.py /opt/vllm-venv/lib/python3.12/site-packages/vllm/envs.py
+COPY vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py \
+    /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+
+RUN rm -f /opt/vllm-venv/lib/python3.12/site-packages/vllm/__pycache__/envs.*.pyc \
+    /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/__pycache__/qwen_gdn_linear_attn.*.pyc
