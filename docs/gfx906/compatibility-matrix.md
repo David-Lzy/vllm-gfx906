@@ -158,3 +158,9 @@ same MI50 hardware. It is not a production recommendation.
   `75.431 -> 76.584 tok/s` at C1 and `251.484 -> 256.203 tok/s` at C8. Retain
   the ROCm-only path as a default-off source overlay; it is not a production
   default or a Qwen27 service claim yet.
+- Phase 144 completed the missing Qwen3.8 27B AWQ TP4 service validation for
+  that output-normalization overlay. Text, one/two 256-square image, JSON
+  `3/3`, drained-queue, and fatal-log gates passed, but its fixed-128 C1 gain
+  was only `+0.22%` while C8 and 32K cache-hit decode regressed `-0.40%` and
+  `-0.12%`. Keep the implementation default-off for models with positive
+  evidence; do not enable it in the Qwen3.8 TP4 profile.

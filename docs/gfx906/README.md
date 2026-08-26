@@ -58,6 +58,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.6 packed/fused SplitKV-29 TP4 composition](phase-138-qwen36-packed-fused-splitkv29-composition.md)
 - [Qwen 27B unified-attention decode screen](phase-141-gfx906-triton-unified-qwen27.md)
 - [Qwen GDN output-norm portability](phase-142-gfx906-qwen-gdn-output-norm-v028.md)
+- [Qwen3.8 TP4 GDN output-norm validation](phase-144-qwen38-tp4-gdn-output-norm.md)
 - [Qwen3.5 multimodal truncation and profiling](phase-131-qwen35-mm-truncation-profiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
