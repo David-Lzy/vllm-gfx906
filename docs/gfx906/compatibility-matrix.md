@@ -126,3 +126,11 @@ same MI50 hardware. It is not a production recommendation.
   regressed `235.620 -> 219.663 tok/s` (-6.77%). Retain the composition only
   as a Qwen3.6 packed-INT8 TP4 long-context development option; it is not a
   common serving default and does not change Qwen3.5 production.
+- Phase 139 screened upstream vLLM PR `#50465` batch-sharded sampling on
+  Qwen3.6 27B standard AWQ TP4. It is functional only with explicitly forced
+  Model Runner V2 for this hybrid architecture: text, one/two 256-square image,
+  and JSON `3/3` gates passed with empty fatal scans. Against its matched
+  forced-V2 control, however, it reduced fixed-128 C1 from `49.2431` to
+  `48.7565 tok/s` (-0.99%) and C8 from `211.5570` to `199.6205 tok/s`
+  (-5.64%). The batch-sharded path is therefore evidence-only, not a Qwen3.6,
+  Qwen3.8, or production profile candidate.
