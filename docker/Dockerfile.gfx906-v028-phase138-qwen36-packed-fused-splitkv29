@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase123-qwen38-int8-semantic
+FROM ${BASE_IMAGE}
+
+# Reuse the Phase 129 gfx906 conditional-pointer compiler repair that the
+# packed/fused Qwen3.6 overlay already proved. The selector patch below is
+# intentionally the only additional execution-path change in this image.
+COPY --from=triton-wheel triton-3.6.0-cp312-cp312-linux_x86_64.whl /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl
+COPY vllm/envs.py /tmp/vllm-overlay/envs.py
+COPY vllm/v1/attention/ops/chunked_prefill_paged_decode.py /tmp/vllm-overlay/chunked_prefill_paged_decode.py
+COPY vllm/model_executor/layers/fused_qk_norm_rope.py /tmp/vllm-overlay/fused_qk_norm_rope.py
+COPY vllm/model_executor/models/qwen3_next.py /tmp/vllm-overlay/qwen3_next.py
+
+RUN /opt/vllm-venv/bin/python -m pip install --no-deps --force-reinstall \
+        /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl \
+    && cp /tmp/vllm-overlay/envs.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/ \
+    && cp /tmp/vllm-overlay/chunked_prefill_paged_decode.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/attention/ops/ \
+    && cp /tmp/vllm-overlay/fused_qk_norm_rope.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/ \
+    && cp /tmp/vllm-overlay/qwen3_next.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/ \
+    && rm -f /opt/vllm-venv/lib/python3.12/site-packages/vllm/__pycache__/envs.*.pyc \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/v1/attention/ops/__pycache__/chunked_prefill_paged_decode.*.pyc \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/__pycache__/fused_qk_norm_rope.*.pyc \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/__pycache__/qwen3_next.*.pyc

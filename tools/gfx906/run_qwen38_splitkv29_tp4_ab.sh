@@ -14,6 +14,13 @@ set -euo pipefail
 : "${MODEL_DIR:?set the standard 27B AWQ model directory}"
 : "${FIXTURE:?set a readable 256-square image fixture}"
 
+# Phase 135-style compact checkpoints refer to their unmodified AWQ tensors
+# through a read-only /source mount. Leave this empty for standard checkpoints.
+readonly MODEL_SOURCE_DIR=${MODEL_SOURCE_DIR:-}
+# Some overlay Dockerfiles require the locally built gfx906 Triton wheel.
+# Keeping this optional preserves the Phase 136/137 build contract.
+readonly TRITON_WHEEL_DIR=${TRITON_WHEEL_DIR:-}
+
 if [[ "$ALLOW_PRODUCTION_PAUSE" != "1" ]]; then
     echo "ALLOW_PRODUCTION_PAUSE must be 1" >&2
     exit 2
@@ -44,10 +51,16 @@ require_file() {
 
 capture_idle_preflight() {
     require_file "$MODEL_DIR/config.json"
+    if [[ -n "$MODEL_SOURCE_DIR" ]]; then
+        require_file "$MODEL_SOURCE_DIR/config.json"
+    fi
     require_file "$FIXTURE"
     require_file "$PRODUCTION_COMPOSE_FILE"
     require_file "$PRODUCTION_ENV_FILE"
-    docker image inspect "$IMAGE" >"$RESULT_ROOT/image-inspect.json"
+    if ! docker image inspect "$IMAGE" >"$RESULT_ROOT/image-inspect-before.json" 2>&1; then
+        printf 'target image will be built by this run: %s\n' "$IMAGE" \
+            >"$RESULT_ROOT/image-inspect-before.json"
+    fi
     curl -fsS --max-time 5 http://127.0.0.1:8002/health \
         >"$RESULT_ROOT/production-health-before.txt"
     curl -fsS --max-time 5 http://127.0.0.1:8002/metrics \
@@ -297,6 +310,10 @@ run_variant() {
     local cache_dir="$PHASE_ROOT/cache/$variant"
     local container="$CONTAINER_PREFIX-$variant"
     local started elapsed
+    local source_volume=()
+    if [[ -n "$MODEL_SOURCE_DIR" ]]; then
+        source_volume=(-v "$MODEL_SOURCE_DIR:/source:ro")
+    fi
     mkdir -p "$directory" "$cache_dir/triton-cache"
     ACTIVE_CONTAINER="$container"
     started="$(date +%s%N)"
@@ -314,7 +331,8 @@ run_variant() {
         -e VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS="$forced_splits" \
         -e VLLM_ROCM_USE_AITER=0 -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
         -e TRITON_CACHE_DIR=/root/.triton/cache \
-        -v "$MODEL_DIR:/model:ro" -v "$cache_dir:/root/.cache/vllm" \
+        -v "$MODEL_DIR:/model:ro" "${source_volume[@]}" \
+        -v "$cache_dir:/root/.cache/vllm" \
         -v "$cache_dir/triton-cache:/root/.triton/cache" \
         --entrypoint /bin/bash "$IMAGE" -lc \
         "exec /opt/vllm-venv/bin/vllm serve /model --host 127.0.0.1 --port $port \\
@@ -332,9 +350,10 @@ run_variant() {
     wait_for_health "$port" "$variant"
     elapsed="$(awk -v start="$started" -v end="$(date +%s%N)" 'BEGIN {printf "%.3f", (end-start)/1000000000}')"
     jq -n --arg variant "$variant" --arg image "$IMAGE" --arg model_dir "$MODEL_DIR" \
+        --arg source_model_dir "$MODEL_SOURCE_DIR" \
         --argjson max_splits "$max_splits" --argjson forced_splits "$forced_splits" \
         --argjson startup_seconds "$elapsed" \
-        '{variant:$variant,image:$image,model_dir:$model_dir,tensor_parallel_size:4,max_model_len:100000,max_splits:$max_splits,forced_splits:$forced_splits,startup_seconds:$startup_seconds}' \
+        '{variant:$variant,image:$image,model_dir:$model_dir,source_model_dir:$source_model_dir,tensor_parallel_size:4,max_model_len:100000,max_splits:$max_splits,forced_splits:$forced_splits,startup_seconds:$startup_seconds}' \
         >"$directory/runtime.json"
     run_gates "$port" "$directory"
     run_benchmarks "$port" "$directory"
@@ -344,8 +363,14 @@ run_variant() {
 }
 
 capture_idle_preflight
-docker build -f "$REPO_ROOT/$DOCKERFILE" \
+build_context_args=()
+if [[ -n "$TRITON_WHEEL_DIR" ]]; then
+    require_file "$TRITON_WHEEL_DIR/triton-3.6.0-cp312-cp312-linux_x86_64.whl"
+    build_context_args+=(--build-context "triton-wheel=$TRITON_WHEEL_DIR")
+fi
+docker build "${build_context_args[@]}" -f "$REPO_ROOT/$DOCKERFILE" \
     -t "$IMAGE" "$REPO_ROOT" >"$RESULT_ROOT/image-build.log" 2>&1
+docker image inspect "$IMAGE" >"$RESULT_ROOT/image-inspect-after-build.json"
 (
     cd "$PRODUCTION_WORKDIR"
     docker compose --env-file "$PRODUCTION_ENV_FILE" -f "$PRODUCTION_COMPOSE_FILE" down
