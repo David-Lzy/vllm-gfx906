@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -60,8 +61,12 @@ jobs:
     - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
       with:
         extra_args: >-
-          ${{ github.event_name == 'pull_request' &&
+          ${{ github.event_name == 'workflow_dispatch' &&
+          '--all-files --hook-stage manual' ||
+          github.event_name == 'pull_request' &&
           format('--from-ref {0} --to-ref {1} --hook-stage manual',
           github.event.pull_request.base.sha,
           github.event.pull_request.head.sha) ||
-          '--all-files --hook-stage manual' }}
+          format('--from-ref {0} --to-ref {1} --hook-stage manual',
+          github.event.before,
+          github.sha) }}
