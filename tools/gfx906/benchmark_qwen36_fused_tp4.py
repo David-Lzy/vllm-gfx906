@@ -14,6 +14,7 @@ def request(
     model: str,
     index: int,
     max_tokens: int,
+    ignore_eos: bool,
     results: dict[int, dict[str, float | int]],
 ) -> None:
     payload = {
@@ -33,6 +34,8 @@ def request(
         "stream_options": {"include_usage": True},
         "chat_template_kwargs": {"enable_thinking": False},
     }
+    if ignore_eos:
+        payload["ignore_eos"] = True
     request = urllib.request.Request(
         f"{base_url}/v1/chat/completions",
         data=json.dumps(payload).encode(),
@@ -68,7 +71,14 @@ def run_batch(args: argparse.Namespace) -> dict[str, float | int]:
     threads = [
         threading.Thread(
             target=request,
-            args=(args.base_url, args.model, index, args.max_tokens, results),
+            args=(
+                args.base_url,
+                args.model,
+                index,
+                args.max_tokens,
+                args.ignore_eos,
+                results,
+            ),
         )
         for index in range(args.concurrency)
     ]
@@ -101,11 +111,19 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--concurrency", type=int, required=True)
     parser.add_argument("--warmup", action="store_true")
+    parser.add_argument("--ignore-eos", action="store_true")
     args = parser.parse_args()
 
     if args.warmup:
         warmup: dict[int, dict[str, float | int]] = {}
-        request(args.base_url, args.model, -1, 32, warmup)
+        request(
+            args.base_url,
+            args.model,
+            -1,
+            32,
+            args.ignore_eos,
+            warmup,
+        )
         print(json.dumps({"warmup": warmup[-1]}, indent=2), flush=True)
         return
     print(json.dumps(run_batch(args), indent=2), flush=True)

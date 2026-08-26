@@ -827,12 +827,21 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         The RMSNormGated + quant sequence is eligible for fusion
         by the compilation pass when fuse_norm_quant is enabled.
         """
-        z_shape_og = z.shape
-        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
-        z = z.reshape(-1, z.shape[-1])
-        core_attn_out = self.norm(core_attn_out, z)
-        core_attn_out = core_attn_out.reshape(z_shape_og)
-        core_attn_out = core_attn_out.flatten(-2)  # ... h d -> ... (h d)
+        if (
+            current_platform.is_rocm()
+            and envs.VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM
+        ):
+            # Preserve the [tokens, heads, head_dim] GDN layout through the
+            # native RMSNormGated operation and flatten once for out_proj.
+            core_attn_out = self.norm.forward_native(core_attn_out, z)
+            core_attn_out = core_attn_out.flatten(-2)
+        else:
+            z_shape_og = z.shape
+            core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
+            z = z.reshape(-1, z.shape[-1])
+            core_attn_out = self.norm(core_attn_out, z)
+            core_attn_out = core_attn_out.reshape(z_shape_og)
+            core_attn_out = core_attn_out.flatten(-2)  # ... h d -> ... (h d)
         output, _ = self.out_proj(core_attn_out)
         return output
 
