@@ -89,11 +89,11 @@
       "worktree": "not-attached"
     },
     {
-      "ahead_of_default": 40,
+      "ahead_of_default": 49,
       "behind_default": 0,
       "evidence_class": "canonical-documentation-integration",
       "evidence_reference": "docs/gfx906/README.md",
-      "last_update": "2026-08-26T07:43:47+09:30",
+      "last_update": "2026-08-26T15:12:34+09:30",
       "merge_base": "ff063e44e2be3ed37f47790e81dd94fa5e1cadb9",
       "open_pull_requests": [
         {
@@ -106,8 +106,8 @@
       ],
       "proposed_lifecycle": "retain-active",
       "ref": "docs/gfx906-roadmap-v027",
-      "subject": "docs: record qwen36 packed fusion tp4 result",
-      "tip": "97e63e9784003496178405d5bd3c3f96f6b01c10",
+      "subject": "docs: record Qwen3.8 GDN output norm rejection",
+      "tip": "feff4934452857c568de827ca019c31f8679e168",
       "worktree": "attached"
     },
     {
@@ -377,6 +377,20 @@
       "worktree": "attached"
     },
     {
+      "ahead_of_default": 2404,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T14:19:28+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/gfx906-gdn-output-norm-v028",
+      "subject": "perf: add gfx906 Qwen GDN output norm overlay",
+      "tip": "bd84b5192ce47ecc00ba839ed86b56ec786c122f",
+      "worktree": "attached"
+    },
+    {
       "ahead_of_default": 1252,
       "behind_default": 68,
       "evidence_class": "performance-or-benchmark-evidence",
@@ -643,6 +657,34 @@
       "worktree": "attached"
     },
     {
+      "ahead_of_default": 2404,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T13:06:50+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/gfx906-triton-unified-qwen27",
+      "subject": "bench: screen Qwen 27B unified attention",
+      "tip": "b0ff23b897854fe937595a2fca6304c77ea08aa5",
+      "worktree": "attached"
+    },
+    {
+      "ahead_of_default": 2404,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T12:46:20+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/gfx906-unified-attention-long-prefill",
+      "subject": "bench: screen gfx906 unified prefill path",
+      "tip": "2e4e7a6b36356338ad539cdd78a73c461194abb3",
+      "worktree": "attached"
+    },
+    {
       "ahead_of_default": 1263,
       "behind_default": 68,
       "evidence_class": "performance-or-benchmark-evidence",
@@ -864,6 +906,20 @@
       "ref": "perf/qwen35-vit-torch-compile",
       "subject": "perf: evaluate Qwen vision encoder compilation",
       "tip": "2a31ea03f96955e05dc25c24fa3a81428e9ad57a",
+      "worktree": "attached"
+    },
+    {
+      "ahead_of_default": 2403,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T10:00:47+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/qwen36-packed-fused-splitkv29",
+      "subject": "bench: compose qwen36 packed fused splitkv29",
+      "tip": "be999204e00037e7b7958505e8c7585d48dc4f98",
       "worktree": "attached"
     },
     {
@@ -1427,6 +1483,62 @@
       "worktree": "not-attached"
     },
     {
+      "ahead_of_default": 2405,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T11:47:09+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/v028-qwen-tp4-batch-sharded-sampling",
+      "subject": "bench: add TP batch-sharded sampling harness",
+      "tip": "a5a9b214ae4b0669268d782fc61bff91a5426aa0",
+      "worktree": "attached"
+    },
+    {
+      "ahead_of_default": 2396,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T09:11:25+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/v028-qwen36-tp4-splitkv29-port",
+      "subject": "perf: add qwen36 splitkv portability harness",
+      "tip": "bf26adc855b4575781db5d7764587266d3342f6b",
+      "worktree": "attached"
+    },
+    {
+      "ahead_of_default": 2405,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T14:32:14+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/v028-qwen38-tp4-gdn-output-norm",
+      "subject": "perf: add Qwen3.8 TP4 output norm harness",
+      "tip": "34dd90d77790277fa3bf3a0f36c9569bf1205108",
+      "worktree": "attached"
+    },
+    {
+      "ahead_of_default": 2395,
+      "behind_default": 68,
+      "evidence_class": "performance-or-benchmark-evidence",
+      "evidence_reference": "docs/gfx906/README.md",
+      "last_update": "2026-08-26T08:25:53+09:30",
+      "merge_base": "a7fdfeef72323eb3db6f0620e4ea200290d0ca5a",
+      "open_pull_requests": [],
+      "proposed_lifecycle": "retain-evidence",
+      "ref": "perf/v028-qwen38-tp4-splitkv29-rebase",
+      "subject": "fix: pass multimodal JSON arguments to phase136 runner",
+      "tip": "b27df4bb87e51f7001410171c31252e6325316ae",
+      "worktree": "attached"
+    },
+    {
       "ahead_of_default": 1247,
       "behind_default": 68,
       "evidence_class": "compatibility-port-evidence",
@@ -1587,8 +1699,8 @@
   "summary": {
     "lifecycle_counts": {
       "retain-active": 2,
-      "retain-evidence": 109
+      "retain-evidence": 117
     },
-    "remote_heads": 111
+    "remote_heads": 119
   }
 }
