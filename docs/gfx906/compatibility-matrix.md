@@ -11,7 +11,7 @@ Status meanings:
 | --- | --- | --- | --- | --- |
 | Hardware | AMD MI50/MI60 (`gfx906`) | verified-current | planned-v0.26 | Real-hardware validation is mandatory |
 | Primary model | Qwen3.5 9B AWQ 4-bit | verified-current | planned-v0.26 | Text and multimodal parity target |
-| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode; the packed-INT8 embedding/head profile passed independent Qwen3.8 and Qwen3.6 gates after the FP32-accumulation repair, with small retained development-only throughput gains; the Qwen3.6 fused QK/RMSNorm/MRoPE/gate composition was provisionally positive at fixed-128 decode, while its SplitKV-29 composition is long-context-only after a +14.83% 32K result paired with a -6.77% C8 regression |
+| Secondary models | Qwen3.6/Qwen3.8 27B AWQ 4-bit | experimental | experimental | v0.28 TP4 standard weights passed text, image, JSON, C1/C8, and 32K cached decode. A matched TP2x2 Router topology is retained for high concurrency: Qwen3.6/Qwen3.8 C8 improved 13.7%/15.6% and mixed C16 47.9%/35.5%, while C1 regressed 18.3%/16.6%; use TP4 for C1. The packed-INT8 embedding/head profile remains development-only, and the Qwen3.6 SplitKV-29 composition remains long-context-only. |
 | Serving | OpenAI-compatible API | verified-current | planned-v0.26 | Text, image URL/data URL, and JSON output |
 | Serving | Cost-aware Router sidecar | unverified | experimental-rejected | Isolated C16/C32 evaluation did not clear the tail-latency gate; retain current Router |
 | Topology | Four independent TP1 workers | verified-current | planned-v0.26 | Router-backed production topology |
@@ -164,3 +164,10 @@ same MI50 hardware. It is not a production recommendation.
   was only `+0.22%` while C8 and 32K cache-hit decode regressed `-0.40%` and
   `-0.12%`. Keep the implementation default-off for models with positive
   evidence; do not enable it in the Qwen3.8 TP4 profile.
+- Phase 145 compared one all-four-GPU TP4 Qwen 27B service with two independent
+  TP2 services behind an isolated round-robin Router. Both Qwen3.6 and Qwen3.8
+  passed text, one/two-image, JSON `3/3`, drained-queue, and fatal-log gates;
+  Router distribution was 40/41 requests. It is retained for high-concurrency
+  traffic: Qwen3.6 C8/mixed-C16 improved `+13.7%/+47.9%`, and Qwen3.8 improved
+  `+15.6%/+35.5%`. Direct TP4 remains the C1 choice because Router C1 regressed
+  `-18.3%` and `-16.6%`, respectively. This does not change Qwen3.5 production.
