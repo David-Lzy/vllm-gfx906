@@ -150,3 +150,11 @@ same MI50 hardware. It is not a production recommendation.
   SplitKV control (`-1513.4%`). The generic replacement is rejected before any
   server integration; the compatible SplitKV route remains the development
   baseline for this path.
+- Phase 142 revalidated the narrow Qwen GDN output-normalization reshape
+  elision on v0.28. Direct FP16 comparisons were exact and improved the
+  rank-local Qwen3.5/Qwen27 shapes by `7.86-8.74%`. An isolated Qwen3.5 9B AWQ
+  TP1 service gate passed text, one/two 256-square images, JSON `3/3`,
+  drained-queue, and fatal-log checks; fixed-128 completion throughput improved
+  `75.431 -> 76.584 tok/s` at C1 and `251.484 -> 256.203 tok/s` at C8. Retain
+  the ROCm-only path as a default-off source overlay; it is not a production
+  default or a Qwen27 service claim yet.
