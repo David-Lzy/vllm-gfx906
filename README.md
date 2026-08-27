@@ -23,11 +23,10 @@ with upstream vLLM.
 
 ## Current Status
 
-The public documentation describes an active, experimental v0.28 gfx906
-integration line. The validated small-model reference is Qwen3.5 9B AWQ with
-text and image inputs. Qwen3.8 27B AWQ can be made functionally compatible in targeted
-configurations, but it is an experimental performance path rather than a
-production recommendation on MI50.
+The current versioned release is `v0.28.0-gfx906.1`. Its validated production
+profile is Qwen3.5 9B AWQ with text and image inputs. Qwen3.8 27B AWQ is
+functionally compatible in targeted TP4 configurations, but remains a
+development performance path rather than the default production model on MI50.
 
 The project does not publish a floating `latest` image. Build and deployment
 artifacts are only meaningful when accompanied by an immutable source commit,
@@ -50,11 +49,21 @@ copied from a container page.
 
 ## Getting Started
 
-The versioned public image is:
+The target versioned image is:
 
 ```text
 ghcr.io/david-lzy/vllm-gfx906:v0.28.0-gfx906.1
 ```
+
+The source release and hardware validation are complete. Registry publication
+is pending the repository owner's GitHub Packages authorization. Until the
+release notes contain an immutable `sha256` digest and an anonymous-pull result,
+build the image from the tagged source instead of assuming the tag is public.
+
+See the [versioned GitHub release](https://github.com/David-Lzy/vllm-gfx906/releases/tag/v0.28.0-gfx906.1)
+for the source tag, full Git recovery bundle, compact benchmark evidence, and
+checksums. Registry publication status is recorded in the
+[release notes](docs/gfx906/release-v0.28.0-gfx906.1.md).
 
 There is deliberately no floating `latest` tag. The image is built from this
 repository in one pass on top of the pinned ROCm 7.2.1/PyTorch 2.11 gfx906
