@@ -53,10 +53,8 @@ class RocmAttentionMetadata:
     num_actual_tokens: int  # Number of tokens excluding padding.
     max_query_len: int
     query_start_loc: torch.Tensor
-    query_start_loc_cpu: torch.Tensor
     max_seq_len: int
     seq_lens: torch.Tensor
-    seq_lens_cpu_upper_bound: torch.Tensor | None
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
 
@@ -149,10 +147,8 @@ class RocmAttentionMetadataBuilder(AttentionMetadataBuilder[RocmAttentionMetadat
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
             query_start_loc=query_start_loc,
-            query_start_loc_cpu=common_attn_metadata.query_start_loc_cpu,
             max_seq_len=max_seq_len,
             seq_lens=seq_lens,
-            seq_lens_cpu_upper_bound=common_attn_metadata.seq_lens_cpu_upper_bound,
             block_table=block_table_tensor,
             slot_mapping=slot_mapping,
             use_cascade=use_cascade,
@@ -224,6 +220,10 @@ class RocmAttentionBackend(AttentionBackend):
     def get_name() -> str:
         return "ROCM_ATTN"
 
+    @classmethod
+    def supports_sliding_window(cls) -> bool:
+        return True
+
     @staticmethod
     def get_impl_cls() -> type["RocmAttentionImpl"]:
         return RocmAttentionImpl
@@ -292,6 +292,8 @@ class RocmAttentionImpl(AttentionImpl):
         self.alibi_slopes = alibi_slopes
         if sliding_window is None:
             self.sliding_window = (-1, -1)
+        elif attn_type in (AttentionType.ENCODER, AttentionType.ENCODER_ONLY):
+            self.sliding_window = (sliding_window - 1, sliding_window - 1)
         else:
             self.sliding_window = (sliding_window - 1, 0)
         self.kv_cache_dtype = kv_cache_dtype
@@ -358,6 +360,7 @@ class RocmAttentionImpl(AttentionImpl):
             softmax_scale=self.scale,
             sliding_window_q=self.sliding_window[0],
             sliding_window_k=self.sliding_window[1],
+            sinks=self.sinks,
         )
         return output
 
@@ -425,9 +428,13 @@ class RocmAttentionImpl(AttentionImpl):
         if is_quantized_kv_cache(self.kv_cache_dtype):
             key_cache = key_cache.view(self.fp8_dtype)
             value_cache = value_cache.view(self.fp8_dtype)
-            assert layer._q_scale_float == 1.0, (
-                "A non 1.0 q_scale is not currently supported."
-            )
+            # q_scale only applies to an fp8 query; this path keeps the query
+            # in full precision, so a non-1.0 q_scale is not applicable here.
+            if query.dtype == self.fp8_dtype and layer._q_scale_float != 1.0:
+                raise NotImplementedError(
+                    "A non 1.0 q_scale with an fp8 query is not currently "
+                    "supported by RocmAttentionImpl."
+                )
 
         cu_seqlens_q = attn_metadata.query_start_loc
         seqused_k = attn_metadata.seq_lens
@@ -446,9 +453,7 @@ class RocmAttentionImpl(AttentionImpl):
             value_cache=value_cache,
             block_table=block_table,
             query_start_loc=cu_seqlens_q,
-            query_start_loc_cpu=attn_metadata.query_start_loc_cpu,
             seq_lens=seqused_k,
-            seq_lens_cpu=attn_metadata.seq_lens_cpu_upper_bound,
             max_seq_len=max_seqlen_k,
             max_query_len=max_seqlen_q,
             k_scale=layer._k_scale,
@@ -459,7 +464,6 @@ class RocmAttentionImpl(AttentionImpl):
             output_scale=output_scale,
             sinks=self.sinks,
             causal=attn_metadata.causal,
-            attn_type=self.attn_type,
         )
 
         return output

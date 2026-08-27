@@ -1,5 +1,11 @@
 /.venv
+/.git
+/.agent
+/.local
 /build
+/artifacts/vllm-rocm-install/
+/bake-config-build-*.json
+/wheel-export/
 dist
 vllm/*.so
 vllm/vllm-rs
@@ -33,3 +39,20 @@ share/python-wheels/
 *.egg
 MANIFEST
 rust/target/
+
+# Local model, compiler, benchmark, and credential material must never enter
+# the public release build context.
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.npy
+*.npz
+*.onnx
+*.pem
+*.key
+hf_cache/
+models/
+results/
+logs/
+cache/

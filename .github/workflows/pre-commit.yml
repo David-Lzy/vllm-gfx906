@@ -2,71 +2,57 @@ name: pre-commit
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
-  pre-run-check:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-    - name: Check PR label and author merge count
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      with:
-        script: |
-          const { data: pr } = await github.rest.pulls.get({
-            ...context.repo,
-            pull_number: context.payload.pull_request.number,
-          });
-
-          const hasReadyLabel = pr.labels.some(l => l.name === 'ready');
-          const hasVerifiedLabel = pr.labels.some(l => l.name === 'verified');
-
-          const { data: mergedPRs } = await github.rest.search.issuesAndPullRequests({
-            q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:merged author:${pr.user.login}`,
-            per_page: 4,
-          });
-          const mergedCount = mergedPRs.total_count;
-
-          if (hasReadyLabel || hasVerifiedLabel || mergedCount >= 4) {
-            core.info(`Check passed: verified label=${hasVerifiedLabel}, ready label=${hasReadyLabel}, 4+ merged PRs=${mergedCount >= 4}`);
-          } else {
-            core.setFailed(`PR must have the 'verified' or 'ready' (which also triggers tests) label or the author must have at least 4 merged PRs (found ${mergedCount}).`);
-          }
-
   pre-commit:
-    needs: pre-run-check
-    if: always() && (needs.pre-run-check.result == 'success' || needs.pre-run-check.result == 'skipped')
     runs-on: ubuntu-latest
+    env:
+      # A release bridge replaces most of the upstream tree at once. In that
+      # case, lint the gfx906 delta from the pinned upstream release instead of
+      # treating every upstream v0.23 -> v0.28 change as a fork-owned edit.
+      GFX906_UPSTREAM_RELEASE_BASE: 2cf0a6915ce544dc493a0990f2ea38d81601128a
+      GFX906_RELEASE_BRIDGE_THRESHOLD: 500
     steps:
-    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
-      with:
-        python-version: "3.12"
-    - run: echo "::add-matcher::.github/workflows/matchers/actionlint.json"
-    - run: echo "::add-matcher::.github/workflows/matchers/markdownlint.json"
-    - run: echo "::add-matcher::.github/workflows/matchers/mypy.json"
-    - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
-      with:
-        extra_args: >-
-          ${{ github.event_name == 'workflow_dispatch' &&
-          '--all-files --hook-stage manual' ||
-          github.event_name == 'pull_request' &&
-          format('--from-ref {0} --to-ref {1} --hook-stage manual',
-          github.event.pull_request.base.sha,
-          github.event.pull_request.head.sha) ||
-          format('--from-ref {0} --to-ref {1} --hook-stage manual',
-          github.event.before,
-          github.sha) }}
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pre-commit tooling
+        run: python -m pip install pre-commit shellcheck-py==0.10.0.1
+      - name: Run changed-file checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git merge-base HEAD origin/main)"
+          fi
+
+          changed_count="$(git diff --name-only --diff-filter=ACMR "${BASE_SHA}"...HEAD | wc -l)"
+          if [ "${changed_count}" -gt "${GFX906_RELEASE_BRIDGE_THRESHOLD}" ] && \
+             git merge-base --is-ancestor "${GFX906_UPSTREAM_RELEASE_BASE}" HEAD; then
+            echo "Release bridge detected (${changed_count} files); using pinned upstream base."
+            BASE_SHA="${GFX906_UPSTREAM_RELEASE_BASE}"
+          fi
+
+          mapfile -t changed_files < <(
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}"...HEAD
+          )
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "No added, copied, modified, or renamed files to check."
+            exit 0
+          fi
+
+          printf 'Checking %s fork-owned files.\n' "${#changed_files[@]}"
+          pre-commit run --files "${changed_files[@]}" --hook-stage manual \
+            --show-diff-on-failure

@@ -1,0 +1,167 @@
+name: vllm-gfx906-qwen35-router
+
+x-vllm-environment: &vllm-environment
+  OMP_NUM_THREADS: "${OMP_NUM_THREADS:-12}"
+  OPENBLAS_NUM_THREADS: "${OMP_NUM_THREADS:-12}"
+  MKL_NUM_THREADS: "${OMP_NUM_THREADS:-12}"
+  NUMEXPR_NUM_THREADS: "${OMP_NUM_THREADS:-12}"
+  TOKENIZERS_PARALLELISM: "false"
+  FLASH_ATTENTION_TRITON_AMD_ENABLE: "TRUE"
+  FLASH_ATTENTION_TRITON_AMD_REF: "TRUE"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "3"
+  ROCM_ARCH: gfx906
+  PYTORCH_ROCM_ARCH: gfx906
+  VLLM_TARGET_DEVICE: rocm
+  VLLM_ROCM_USE_AITER: "0"
+  VLLM_CACHE_ROOT: /root/.cache/vllm
+  VLLM_ENGINE_READY_TIMEOUT_S: "1800"
+  TRITON_CACHE_DIR: /root/.triton/cache
+  FLASH_ATTENTION_TRITON_AMD_AUTOTUNE: "0"
+
+x-vllm-command: &vllm-command
+  - serve
+  - "${MODEL_SOURCE}"
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+  - --served-model-name
+  - "${SERVED_MODEL_NAME}"
+  - --trust-remote-code
+  - --dtype
+  - float16
+  - --kv-cache-dtype
+  - float16
+  - --tensor-parallel-size
+  - "1"
+  - --linear-backend
+  - gfx906_gptq
+  - --max-model-len
+  - "${MAX_MODEL_LEN:-100000}"
+  - --gpu-memory-utilization
+  - "${GPU_MEMORY_UTILIZATION:-0.90}"
+  - --max-num-seqs
+  - "${MAX_NUM_SEQS:-8}"
+  - --max-num-batched-tokens
+  - "${MAX_NUM_BATCHED_TOKENS:-32768}"
+  - --renderer-num-workers
+  - "${RENDERER_NUM_WORKERS:-1}"
+  - --enable-prefix-caching
+  - --enable-chunked-prefill
+  - --reasoning-parser
+  - qwen3
+  - --default-chat-template-kwargs
+  - '{"enable_thinking":false}'
+  - --limit-mm-per-prompt
+  - '{"image":64,"video":0}'
+  - --skip-mm-profiling
+  - --mm-processor-kwargs.max_pixels
+  - "${MM_MAX_PIXELS:-16777216}"
+  - --mm-encoder-tp-mode
+  - data
+  - --mm-tensor-ipc
+  - direct_rpc
+  - --mm-processor-cache-type
+  - shm
+  - --mm-processor-cache-gb
+  - "${MM_PROCESSOR_CACHE_GB:-16}"
+  - --mm-shm-cache-max-object-size-mb
+  - "512"
+  - --long-prefill-token-threshold
+  - "8192"
+
+x-vllm-common: &vllm-common
+  image: "${VLLM_IMAGE}"
+  restart: unless-stopped
+  devices:
+    - /dev/kfd
+    - /dev/dri
+  group_add:
+    - video
+  ipc: host
+  shm_size: "${SHM_SIZE:-64g}"
+  expose:
+    - "8000"
+  command: *vllm-command
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()\""]
+    interval: 30s
+    timeout: 5s
+    retries: 20
+    start_period: 1800s
+  networks:
+    - vllm-gfx906
+
+services:
+  router:
+    image: vllm/vllm-router@sha256:4bd8f436cb578a29cc28b1bbf75c9a3a2c2cb4a353f999dc3bfa6adfeebe6dd5
+    restart: unless-stopped
+    ports:
+      - "${PUBLIC_BIND:-127.0.0.1}:${PUBLIC_PORT:-8002}:8000"
+    command:
+      - vllm-router
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --worker-urls
+      - http://vllm-gpu0:8000
+      - http://vllm-gpu1:8000
+      - http://vllm-gpu2:8000
+      - http://vllm-gpu3:8000
+      - --policy
+      - round_robin
+      - --worker-startup-timeout-secs
+      - "1800"
+      - --max-payload-size
+      - "1073741824"
+      - --max-concurrent-requests
+      - "128"
+      - --request-timeout-secs
+      - "3600"
+    depends_on:
+      vllm-gpu0: {condition: service_healthy}
+      vllm-gpu1: {condition: service_healthy}
+      vllm-gpu2: {condition: service_healthy}
+      vllm-gpu3: {condition: service_healthy}
+    networks:
+      - vllm-gfx906
+
+  vllm-gpu0:
+    <<: *vllm-common
+    volumes:
+      - "${HF_CACHE_DIR}:/root/.cache/huggingface"
+      - "${VLLM_CACHE_DIR}/gpu0:/root/.cache/vllm"
+    environment:
+      <<: *vllm-environment
+      HIP_VISIBLE_DEVICES: "0"
+
+  vllm-gpu1:
+    <<: *vllm-common
+    volumes:
+      - "${HF_CACHE_DIR}:/root/.cache/huggingface"
+      - "${VLLM_CACHE_DIR}/gpu1:/root/.cache/vllm"
+    environment:
+      <<: *vllm-environment
+      HIP_VISIBLE_DEVICES: "1"
+
+  vllm-gpu2:
+    <<: *vllm-common
+    volumes:
+      - "${HF_CACHE_DIR}:/root/.cache/huggingface"
+      - "${VLLM_CACHE_DIR}/gpu2:/root/.cache/vllm"
+    environment:
+      <<: *vllm-environment
+      HIP_VISIBLE_DEVICES: "2"
+
+  vllm-gpu3:
+    <<: *vllm-common
+    volumes:
+      - "${HF_CACHE_DIR}:/root/.cache/huggingface"
+      - "${VLLM_CACHE_DIR}/gpu3:/root/.cache/vllm"
+    environment:
+      <<: *vllm-environment
+      HIP_VISIBLE_DEVICES: "3"
+
+networks:
+  vllm-gfx906: {}

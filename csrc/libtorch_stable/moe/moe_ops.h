@@ -9,13 +9,16 @@ void topk_softmax(torch::stable::Tensor& topk_weights,
                   torch::stable::Tensor& topk_indices,
                   torch::stable::Tensor& token_expert_indices,
                   torch::stable::Tensor& gating_output, bool renormalize,
-                  std::optional<torch::stable::Tensor> bias);
+                  std::optional<torch::stable::Tensor> bias,
+                  std::optional<torch::stable::Tensor> is_padding);
 
 void topk_sigmoid(torch::stable::Tensor& topk_weights,
                   torch::stable::Tensor& topk_indices,
                   torch::stable::Tensor& token_expert_indices,
                   torch::stable::Tensor& gating_output, bool renormalize,
-                  std::optional<torch::stable::Tensor> bias);
+                  std::optional<torch::stable::Tensor> bias,
+                  double routed_scaling_factor,
+                  std::optional<torch::stable::Tensor> is_padding);
 
 void topk_softplus_sqrt(
     torch::stable::Tensor& topk_weights, torch::stable::Tensor& topk_indices,
@@ -24,9 +27,12 @@ void topk_softplus_sqrt(
     double routed_scaling_factor,
     const std::optional<torch::stable::Tensor>& correction_bias,
     const std::optional<torch::stable::Tensor>& input_ids,
-    const std::optional<torch::stable::Tensor>& tid2eid);
+    const std::optional<torch::stable::Tensor>& tid2eid,
+    const std::optional<torch::stable::Tensor>& is_padding);
 
-void moe_sum(torch::stable::Tensor& input, torch::stable::Tensor& output);
+void moe_sum(torch::stable::Tensor& input, torch::stable::Tensor& output,
+             std::optional<torch::stable::Tensor> topk_ids,
+             std::optional<torch::stable::Tensor> expert_map);
 
 void moe_align_block_size(
     torch::stable::Tensor topk_ids, int64_t num_experts, int64_t block_size,
@@ -48,6 +54,7 @@ void moe_lora_align_block_size(
     torch::stable::Tensor num_tokens_post_pad,
     torch::stable::Tensor adapter_enabled, torch::stable::Tensor lora_ids,
     std::optional<torch::stable::Tensor> maybe_expert_map);
+#ifndef USE_ROCM
 torch::stable::Tensor moe_wna16_gemm(
     torch::stable::Tensor input, torch::stable::Tensor output,
     torch::stable::Tensor b_qweight, torch::stable::Tensor b_scales,
@@ -58,7 +65,6 @@ torch::stable::Tensor moe_wna16_gemm(
     int64_t BLOCK_SIZE_M, int64_t BLOCK_SIZE_N, int64_t BLOCK_SIZE_K,
     int64_t bit);
 
-#ifndef USE_ROCM
 std::tuple<torch::stable::Tensor, torch::stable::Tensor> grouped_topk(
     const torch::stable::Tensor& scores, int64_t n_group, int64_t topk_group,
     int64_t topk, bool renormalize, double routed_scaling_factor,
