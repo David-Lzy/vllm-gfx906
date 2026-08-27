@@ -1,0 +1,396 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Run a reversible Qwen3.8 27B TP4 packed-INT8 versus standard-AWQ A/B.
+#
+# Both arms retain the validated gfx906 SplitKV-29 geometry. The checkpoint is
+# the only performance variable, so this complements Phases 124, 136, and 152.
+set -euo pipefail
+
+: "${ALLOW_PRODUCTION_PAUSE:?set to 1 after confirming production is idle}"
+: "${BUILD_ROOT:?set the disk2 gfx906 build root}"
+: "${PRODUCTION_WORKDIR:?set the selected production Compose directory}"
+: "${PRODUCTION_COMPOSE_FILE:?set the selected production Compose file}"
+: "${PRODUCTION_ENV_FILE:?set the selected production env file}"
+: "${STANDARD_MODEL_DIR:?set the standard 27B AWQ model directory}"
+: "${PACKED_MODEL_DIR:?set the packed-INT8 overlay directory}"
+: "${MODEL_SOURCE_DIR:?set the standard model directory used by packed symlinks}"
+: "${FIXTURE:?set a readable 256-square image fixture}"
+
+if [[ "$ALLOW_PRODUCTION_PAUSE" != "1" ]]; then
+    echo "ALLOW_PRODUCTION_PAUSE must be 1" >&2
+    exit 2
+fi
+
+readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+readonly PHASE_SLUG=${PHASE_SLUG:-phase-153-qwen38-packed-int8-splitkv29-tp4}
+readonly PHASE_LABEL=${PHASE_LABEL:-Phase 153 Qwen3.8 packed INT8 TP4 SplitKV 29}
+readonly PHASE_ROOT="$BUILD_ROOT/$PHASE_SLUG"
+readonly RESULT_ROOT="$PHASE_ROOT/results/$(date -u +%Y%m%dT%H%M%SZ)"
+readonly IMAGE=${IMAGE:-local/vllm-gfx906:v0.28.0-phase142-qwen-gdn-output-norm}
+readonly SERVED_MODEL=${SERVED_MODEL:-qwen38-phase153-packed-splitkv29-tp4}
+readonly CONTROL_PORT=${CONTROL_PORT:-18164}
+readonly CANDIDATE_PORT=${CANDIDATE_PORT:-18165}
+readonly CONTAINER_PREFIX=${CONTAINER_PREFIX:-vllm-gfx906-phase153}
+readonly SPLITKV_MAX_SPLITS=32
+readonly SPLITKV_FORCED_SPLITS=29
+readonly MAINTENANCE_FALLBACK_HELPER=${MAINTENANCE_FALLBACK_HELPER:-/usr/local/lib/someai/vllm-maintenance-fallback/maintenance_fallback.sh}
+
+ACTIVE_CONTAINER=
+PRODUCTION_RESTORED=0
+XMR_WAS_PAUSED=0
+FALLBACK_ACTIVE=0
+
+mkdir -p "$RESULT_ROOT"
+
+require_file() {
+    [[ -r "$1" ]] || { echo "missing readable file: $1" >&2; exit 2; }
+}
+
+capture_idle_preflight() {
+    require_file "$STANDARD_MODEL_DIR/config.json"
+    require_file "$PACKED_MODEL_DIR/config.json"
+    require_file "$MODEL_SOURCE_DIR/config.json"
+    require_file "$PACKED_MODEL_DIR/model-00001-of-00005.safetensors"
+    require_file "$STANDARD_MODEL_DIR/model-00003-of-00005.safetensors"
+    require_file "$FIXTURE"
+    require_file "$PRODUCTION_COMPOSE_FILE"
+    require_file "$PRODUCTION_ENV_FILE"
+    docker image inspect "$IMAGE" >"$RESULT_ROOT/image-inspect-before.json"
+    curl -fsS --max-time 5 http://127.0.0.1:8002/health \
+        >"$RESULT_ROOT/production-health-before.txt"
+    curl -fsS --max-time 5 http://127.0.0.1:8002/metrics \
+        >"$RESULT_ROOT/production-metrics-before.prom"
+    if rg -q 'vllm:num_requests_(running|waiting).* [1-9][0-9]*\\.0' \
+        "$RESULT_ROOT/production-metrics-before.prom"; then
+        echo "production has active or waiting requests" >&2
+        exit 3
+    fi
+    if systemctl is-active --quiet someai-pexels-video-indexer.service; then
+        echo "Pexels indexer is active; refusing all-GPU $PHASE_LABEL" >&2
+        exit 3
+    fi
+    if [[ -n "${XMR_PID:-}" ]]; then
+        if ! kill -0 "$XMR_PID" 2>/dev/null; then
+            echo "XMR_PID is not a running process: $XMR_PID" >&2
+            exit 3
+        fi
+        ps -o pid,ppid,user,stat,lstart,cmd -p "$XMR_PID" \
+            >"$RESULT_ROOT/xmr-before.txt"
+        kill -STOP "$XMR_PID"
+        XMR_WAS_PAUSED=1
+        ps -o pid,ppid,user,stat,lstart,cmd -p "$XMR_PID" \
+            >"$RESULT_ROOT/xmr-paused.txt"
+    elif pgrep -af 'xmrig|xmr|monero' >"$RESULT_ROOT/xmr-unmanaged.txt"; then
+        echo "XMR is active; rerun with its top-level XMR_PID for reversible pause" >&2
+        exit 3
+    fi
+}
+
+resume_xmr() {
+    if [[ "$XMR_WAS_PAUSED" == "1" ]] && kill -0 "$XMR_PID" 2>/dev/null; then
+        kill -CONT "$XMR_PID" || true
+        ps -o pid,ppid,user,stat,lstart,cmd -p "$XMR_PID" \
+            >"$RESULT_ROOT/xmr-restored.txt" || true
+        XMR_WAS_PAUSED=0
+    fi
+}
+
+prepare_maintenance_fallback() {
+    [[ -x "$MAINTENANCE_FALLBACK_HELPER" ]] || {
+        echo "missing executable maintenance fallback helper: $MAINTENANCE_FALLBACK_HELPER" >&2
+        exit 3
+    }
+    "$MAINTENANCE_FALLBACK_HELPER" prepare
+}
+
+start_maintenance_fallback() {
+    MAINTENANCE_FALLBACK_ALLOW_PORT_TAKEOVER=1 \
+        MAINTENANCE_FALLBACK_PRIMARY_STOPPED=1 \
+        "$MAINTENANCE_FALLBACK_HELPER" up
+    FALLBACK_ACTIVE=1
+    "$MAINTENANCE_FALLBACK_HELPER" verify
+}
+
+stop_maintenance_fallback() {
+    if [[ "$FALLBACK_ACTIVE" == "1" ]]; then
+        "$MAINTENANCE_FALLBACK_HELPER" down
+        FALLBACK_ACTIVE=0
+    fi
+}
+
+restore_production() {
+    local deadline
+    if [[ -n "$ACTIVE_CONTAINER" ]]; then
+        docker rm -f "$ACTIVE_CONTAINER" >/dev/null 2>&1 || true
+        ACTIVE_CONTAINER=
+    fi
+    if [[ "$PRODUCTION_RESTORED" != "1" ]]; then
+        stop_maintenance_fallback
+        (
+            cd "$PRODUCTION_WORKDIR"
+            docker compose --env-file "$PRODUCTION_ENV_FILE" \
+                -f "$PRODUCTION_COMPOSE_FILE" up -d
+        )
+        deadline=$((SECONDS + 1800))
+        until curl -fsS --max-time 5 http://127.0.0.1:8002/health \
+            >"$RESULT_ROOT/production-health-after.txt"; do
+            (( SECONDS < deadline )) || {
+                echo "production did not recover within 30 minutes" >&2
+                return 1
+            }
+            sleep 10
+        done
+        curl -fsS --max-time 5 http://127.0.0.1:8002/v1/models \
+            >"$RESULT_ROOT/production-models-after.json"
+        curl -fsS --max-time 5 http://127.0.0.1:8002/metrics \
+            >"$RESULT_ROOT/production-metrics-after.prom"
+        PRODUCTION_RESTORED=1
+    fi
+    resume_xmr
+}
+
+trap restore_production EXIT
+
+wait_for_health() {
+    local port=$1
+    local variant=$2
+    local deadline=$((SECONDS + 1800))
+    until curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" \
+        >"$RESULT_ROOT/${variant}/health.txt"; do
+        if [[ "$(docker inspect -f '{{.State.Running}}' "$ACTIVE_CONTAINER" \
+            2>/dev/null || true)" != "true" ]]; then
+            docker logs "$ACTIVE_CONTAINER" >"$RESULT_ROOT/${variant}/server.log" 2>&1 || true
+            echo "${variant} exited before becoming healthy" >&2
+            return 1
+        fi
+        (( SECONDS < deadline )) || {
+            docker logs "$ACTIVE_CONTAINER" >"$RESULT_ROOT/${variant}/server.log" 2>&1 || true
+            echo "${variant} did not become healthy within 30 minutes" >&2
+            return 1
+        }
+        sleep 10
+    done
+}
+
+post_checked() {
+    local port=$1
+    local name=$2
+    local payload=$3
+    local directory=$4
+    local output="$directory/${name}.json"
+    local status
+    status="$(curl --silent --show-error --output "$output" --write-out '%{http_code}' \
+        --max-time 900 -H 'content-type: application/json' --data-binary "$payload" \
+        "http://127.0.0.1:${port}/v1/chat/completions")"
+    [[ "$status" == "200" ]]
+    jq -e '.choices[0].message.content | strings | length > 0' "$output" >/dev/null
+}
+
+post_file_checked() {
+    local port=$1
+    local name=$2
+    local payload_file=$3
+    local directory=$4
+    local output="$directory/${name}.json"
+    local status
+    status="$(curl --silent --show-error --output "$output" --write-out '%{http_code}' \
+        --max-time 900 -H 'content-type: application/json' --data-binary "@$payload_file" \
+        "http://127.0.0.1:${port}/v1/chat/completions")"
+    [[ "$status" == "200" ]]
+    jq -e '.choices[0].message.content | strings | length > 0' "$output" >/dev/null
+}
+
+run_gates() {
+    local port=$1
+    local directory=$2
+    local image_b64 text_payload image1_payload image2_payload json_payload content index
+    image_b64="$(base64 -w0 "$FIXTURE")"
+    text_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg phase_label "$PHASE_LABEL" \
+        '{model:$model,temperature:0,max_tokens:32,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:("Reply exactly: "+$phase_label+" text smoke passed")}]}')"
+    image1_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg b64 "$image_b64" \
+        '{model:$model,temperature:0,max_tokens:48,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:[{type:"text",text:"Describe this image in one sentence."},{type:"image_url",image_url:{url:("data:image/png;base64,"+$b64)}}]}]}')"
+    image2_payload="$(jq -nc --arg model "$SERVED_MODEL" --arg b64 "$image_b64" \
+        '{model:$model,temperature:0,max_tokens:48,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:[{type:"text",text:"Describe these two images in one sentence."},{type:"image_url",image_url:{url:("data:image/png;base64,"+$b64)}},{type:"image_url",image_url:{url:("data:image/png;base64,"+$b64)}}]}]}')"
+    post_checked "$port" text "$text_payload" "$directory"
+    post_checked "$port" image1 "$image1_payload" "$directory"
+    post_checked "$port" image2 "$image2_payload" "$directory"
+    for index in 1 2 3; do
+        json_payload="$(jq -nc --arg model "$SERVED_MODEL" \
+            '{model:$model,temperature:0,max_tokens:32,response_format:{type:"json_object"},chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:"Return exactly one JSON object with string key status and value ok."}]}')"
+        post_checked "$port" "json-${index}" "$json_payload" "$directory"
+        content="$(jq -r '.choices[0].message.content' "$directory/json-${index}.json")"
+        jq -e '.status == "ok"' <<<"$content" >/dev/null
+    done
+}
+
+record_c1() {
+    local port=$1
+    local directory=$2
+    local payload=$3
+    local name=$4
+    local output="$directory/${name}.json"
+    local elapsed tokens rate
+    elapsed="$(curl --fail --silent --show-error --output "$output" --write-out '%{time_total}' \
+        --max-time 900 -H 'content-type: application/json' --data-binary "$payload" \
+        "http://127.0.0.1:${port}/v1/chat/completions")"
+    tokens="$(jq -er '.usage.completion_tokens' "$output")"
+    [[ "$tokens" == "128" ]]
+    rate="$(awk -v tokens="$tokens" -v elapsed="$elapsed" 'BEGIN {printf "%.6f", tokens / elapsed}')"
+    jq -n --arg sample "$name" --argjson seconds "$elapsed" \
+        --argjson completion_tokens "$tokens" --argjson completion_tok_s "$rate" \
+        '{sample:$sample,seconds:$seconds,completion_tokens:$completion_tokens,completion_tok_s:$completion_tok_s}' \
+        >>"$directory/c1.jsonl"
+}
+
+record_c8() {
+    local port=$1
+    local directory=$2
+    local payload=$3
+    local batch=$4
+    local start elapsed total=0 index tokens
+    local pids=()
+    start="$(date +%s.%N)"
+    for index in $(seq 1 8); do
+        curl --fail --silent --show-error --max-time 900 -H 'content-type: application/json' \
+            --data-binary "$payload" "http://127.0.0.1:${port}/v1/chat/completions" \
+            >"$directory/c8_${batch}_${index}.json" &
+        pids+=("$!")
+    done
+    for index in "${pids[@]}"; do
+        wait "$index"
+    done
+    elapsed="$(awk -v start="$start" -v end="$(date +%s.%N)" 'BEGIN {printf "%.6f", end - start}')"
+    for index in $(seq 1 8); do
+        tokens="$(jq -er '.usage.completion_tokens' "$directory/c8_${batch}_${index}.json")"
+        [[ "$tokens" == "128" ]]
+        total=$((total + tokens))
+    done
+    jq -n --argjson batch "$batch" --argjson seconds "$elapsed" \
+        --argjson completion_tokens "$total" \
+        --argjson aggregate_completion_tok_s "$(awk -v t="$total" -v s="$elapsed" 'BEGIN {printf "%.6f", t / s}')" \
+        '{batch:$batch,seconds:$seconds,completion_tokens:$completion_tokens,aggregate_completion_tok_s:$aggregate_completion_tok_s}' \
+        >>"$directory/c8.jsonl"
+}
+
+run_benchmarks() {
+    local port=$1
+    local directory=$2
+    local payload context prime index
+    payload="$(jq -nc --arg model "$SERVED_MODEL" \
+        '{model:$model,temperature:0,min_tokens:128,max_tokens:128,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:"Write exactly 128 concise tokens about reliable GPU inference."}]}')"
+    record_c1 "$port" "$directory" "$payload" warmup
+    for index in 1 2 3; do
+        record_c1 "$port" "$directory" "$payload" "c1_${index}"
+        record_c8 "$port" "$directory" "$payload" "$index"
+    done
+    jq -s 'map(select(.sample | startswith("c1_")) | .completion_tok_s) | sort | {samples_tok_s:.,median_tok_s:.[length / 2 | floor]}' \
+        "$directory/c1.jsonl" >"$directory/c1-summary.json"
+    jq -s '{samples:.,median_tok_s:(map(.aggregate_completion_tok_s)|sort|.[length / 2 | floor])}' \
+        "$directory/c8.jsonl" >"$directory/c8-summary.json"
+
+    context="$directory/long32k-context.txt"
+    awk 'BEGIN { for (i = 0; i < 32768; ++i) printf " trace" }' >"$context"
+    prime="$directory/long-prefix-prime.request.json"
+    jq -nc --arg model "$SERVED_MODEL" --rawfile text "$context" \
+        '{model:$model,temperature:0,max_tokens:1,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:$text}]}' >"$prime"
+    post_file_checked "$port" long-prefix-prime "$prime" "$directory"
+    jq -nc --arg model "$SERVED_MODEL" --rawfile text "$context" \
+        '{model:$model,temperature:0,min_tokens:128,max_tokens:128,chat_template_kwargs:{enable_thinking:false},messages:[{role:"user",content:$text}]}' >"$directory/long32k.request.json"
+    for index in 1 2 3; do
+        record_c1 "$port" "$directory" "@$directory/long32k.request.json" "long32k_${index}"
+        mv "$directory/long32k_${index}.json" "$directory/long32k-${index}.json"
+    done
+    jq -s 'map(select(.sample | startswith("long32k_")) | {seconds,completion_tokens,completion_tok_s}) | {samples:.,median_tok_s:(map(.completion_tok_s)|sort|.[length / 2 | floor])}' \
+        "$directory/c1.jsonl" >"$directory/long32k-summary.json"
+}
+
+scan_variant() {
+    local port=$1
+    local directory=$2
+    curl -fsS --max-time 5 "http://127.0.0.1:${port}/metrics" >"$directory/metrics.prom"
+    docker logs "$ACTIVE_CONTAINER" >"$directory/server.log" 2>&1
+    if rg -ni 'oom|out of memory|traceback|xgrammar|failed to advance fsm|rccl.*fatal|nccl.*fatal|ras event|illegal instruction' \
+        "$directory/server.log" >"$directory/error-scan.txt"; then
+        echo "fatal log signature in $(basename "$directory")" >&2
+        return 1
+    fi
+    if rg -q 'vllm:num_requests_(running|waiting).* [1-9][0-9]*\\.0' "$directory/metrics.prom"; then
+        echo "request queue did not drain for $(basename "$directory")" >&2
+        return 1
+    fi
+}
+
+run_variant() {
+    local variant=$1
+    local port=$2
+    local model_dir=$3
+    local needs_source_mount=$4
+    local directory="$RESULT_ROOT/$variant"
+    local cache_dir="$PHASE_ROOT/cache/$variant"
+    local container="$CONTAINER_PREFIX-$variant"
+    local started elapsed
+    local source_volume=()
+    if [[ "$needs_source_mount" == "1" ]]; then
+        source_volume=(-v "$MODEL_SOURCE_DIR:/source:ro")
+    fi
+    mkdir -p "$directory" "$cache_dir/triton-cache"
+    ACTIVE_CONTAINER="$container"
+    started="$(date +%s%N)"
+    docker run -d --name "$container" --network host --ipc host --shm-size 64g \
+        --device /dev/kfd --device /dev/dri --group-add video \
+        -e HIP_VISIBLE_DEVICES=0,1,2,3 \
+        -e PYTORCH_ROCM_ARCH=gfx906 -e ROCM_ARCH=gfx906 -e ROCM_PATH=/opt/rocm \
+        -e USE_ROCM=1 -e VLLM_TARGET_DEVICE=rocm -e VLLM_CACHE_ROOT=/root/.cache/vllm \
+        -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800 -e TORCH_NCCL_ASYNC_ERROR_HANDLING=3 \
+        -e OMP_NUM_THREADS=12 -e OPENBLAS_NUM_THREADS=12 -e MKL_NUM_THREADS=12 \
+        -e NUMEXPR_NUM_THREADS=12 -e TOKENIZERS_PARALLELISM=false \
+        -e VLLM_ROCM_ENABLE_GFX906_SPLITKV=1 -e VLLM_ROCM_GFX906_SPLITKV_DEBUG=1 \
+        -e VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS=8 \
+        -e VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS="$SPLITKV_MAX_SPLITS" \
+        -e VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS="$SPLITKV_FORCED_SPLITS" \
+        -e VLLM_ROCM_USE_AITER=0 -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+        -e TRITON_CACHE_DIR=/root/.triton/cache \
+        -v "$model_dir:/model:ro" "${source_volume[@]}" \
+        -v "$cache_dir:/root/.cache/vllm" \
+        -v "$cache_dir/triton-cache:/root/.triton/cache" \
+        --entrypoint /bin/bash "$IMAGE" -lc \
+        "exec /opt/vllm-venv/bin/vllm serve /model --host 127.0.0.1 --port $port \\
+          --served-model-name $SERVED_MODEL --tensor-parallel-size 4 --dtype float16 \\
+          --trust-remote-code --linear-backend gfx906_gptq --max-model-len 100000 \\
+          --gpu-memory-utilization 0.88 --max-num-seqs 8 --max-num-batched-tokens 8192 \\
+          --limit-mm-per-prompt '{\"image\":64,\"video\":0}' \\
+          --mm-processor-kwargs '{\"max_pixels\":16777216}' \\
+          --mm-processor-cache-type shm --mm-processor-cache-gb 16 \\
+          --mm-shm-cache-max-object-size-mb 512 --mm-tensor-ipc direct_rpc \\
+          --mm-encoder-tp-mode data --renderer-num-workers 1 --enable-prefix-caching \\
+          --enable-chunked-prefill --mamba-cache-mode align --skip-mm-profiling \\
+          --reasoning-parser qwen3 --default-chat-template-kwargs '{\"enable_thinking\":false}'" \
+        >"$directory/container-id.txt"
+    wait_for_health "$port" "$variant"
+    elapsed="$(awk -v start="$started" -v end="$(date +%s%N)" 'BEGIN {printf "%.3f", (end-start)/1000000000}')"
+    jq -n --arg variant "$variant" --arg image "$IMAGE" --arg model_dir "$model_dir" \
+        --arg source_model_dir "$MODEL_SOURCE_DIR" \
+        --argjson max_splits "$SPLITKV_MAX_SPLITS" --argjson forced_splits "$SPLITKV_FORCED_SPLITS" \
+        --argjson startup_seconds "$elapsed" \
+        '{variant:$variant,image:$image,model_dir:$model_dir,source_model_dir:$source_model_dir,tensor_parallel_size:4,max_model_len:100000,max_splits:$max_splits,forced_splits:$forced_splits,startup_seconds:$startup_seconds}' \
+        >"$directory/runtime.json"
+    run_gates "$port" "$directory"
+    run_benchmarks "$port" "$directory"
+    scan_variant "$port" "$directory"
+    docker rm -f "$container" >/dev/null
+    ACTIVE_CONTAINER=
+}
+
+capture_idle_preflight
+prepare_maintenance_fallback
+(
+    cd "$PRODUCTION_WORKDIR"
+    docker compose --env-file "$PRODUCTION_ENV_FILE" -f "$PRODUCTION_COMPOSE_FILE" down
+)
+start_maintenance_fallback
+run_variant standard-awq "$CONTROL_PORT" "$STANDARD_MODEL_DIR" 0
+run_variant packed-int8 "$CANDIDATE_PORT" "$PACKED_MODEL_DIR" 1
+restore_production
+trap - EXIT
+printf '%s\\n' "$RESULT_ROOT"
