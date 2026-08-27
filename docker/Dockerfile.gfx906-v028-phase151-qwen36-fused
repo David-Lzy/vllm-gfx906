@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=local/vllm-gfx906:v0.28.0-phase142-qwen-gdn-output-norm
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.title="vLLM gfx906 Qwen3.6 fused TP2x2 candidate" \
+      org.opencontainers.image.version="phase151" \
+      org.opencontainers.image.description="Phase 129 Triton wheel plus Phase 130 Qwen3.6 fused QK/RoPE dispatch"
+
+# The retained wheel contains only the gfx906 conditional-pointer compiler
+# repair required by the already validated Qwen3.6 fused callable.
+COPY --from=triton-wheel triton-3.6.0-cp312-cp312-linux_x86_64.whl /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl
+COPY vllm/model_executor/layers/fused_qk_norm_rope.py /tmp/vllm-overlay/fused_qk_norm_rope.py
+COPY vllm/model_executor/models/qwen3_next.py /tmp/vllm-overlay/qwen3_next.py
+
+RUN /opt/vllm-venv/bin/python -m pip install --no-deps --force-reinstall \
+        /tmp/triton-3.6.0-cp312-cp312-linux_x86_64.whl \
+    && cp /tmp/vllm-overlay/fused_qk_norm_rope.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/layers/ \
+    && cp /tmp/vllm-overlay/qwen3_next.py \
+        /opt/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/models/
