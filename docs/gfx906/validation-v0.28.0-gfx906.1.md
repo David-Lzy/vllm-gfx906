@@ -1,9 +1,9 @@
 # v0.28.0 gfx906.1 validation
 
-This record covers the release candidate built from commit `32ccc4a39a` and
-tested on four 32 GiB AMD MI50 GPUs. Later release-only documentation and CI
-changes do not alter the tested runtime paths. The published image is rebuilt
-from the final clean release source before publication.
+This record covers the release candidate and the final one-pass image built
+from commit `314389675e1f7e86c1788c56a7a1eb335fd083ed`, tested on four 32 GiB
+AMD MI50 GPUs. Release-only documentation and CI changes made after the main
+performance run did not alter the tested runtime paths.
 
 ## Qwen3.5 9B production profile
 
@@ -23,6 +23,23 @@ errors.
 The four workers received 46, 46, 46, and 45 requests in the release run. The
 final production promotion adds a separate 30-minute soak to this release
 candidate gate.
+
+### Final production canary
+
+The final image reported vLLM `0.28.0+gfx906.1`, PyTorch
+`2.11.0a0+git70d99e9`, and OCI revision `314389675e1f7e86c1788c56a7a1eb335fd083ed`.
+Four TP1 workers became healthy in about 6.7 minutes on a cold final-image
+cache. Text, one image, two images, and JSON constraints `3/3` passed through
+the digest-pinned Router. A three-round C8 check measured 466.88, 524.22, and
+524.23 completion tok/s; the 524.22 tok/s median clears the 97% production
+gate. The slower first round includes post-promotion warmup.
+
+The Router distributed the first 30 canary requests 8/7/8/7 across the four
+workers. All workers drained to zero running and waiting requests, with zero
+container restarts and no OOM, HTTP 5xx, Traceback, xgrammar/FSM, RCCL/NCCL
+fatal, or illegal-instruction signature. The final production soak ran for
+1,806 seconds and passed. Post-soak text, image, and JSON `3/3` checks passed;
+all four workers again drained to zero running and waiting requests.
 
 ## Qwen3.8 27B development profiles
 

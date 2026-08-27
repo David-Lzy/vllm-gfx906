@@ -33,8 +33,13 @@ them.
 ghcr.io/david-lzy/vllm-gfx906:v0.28.0-gfx906.1
 ```
 
-The final immutable digest and anonymous-pull verification are recorded here
-after publication. No `latest` tag is created.
+The image was rebuilt in one pass from source commit
+`314389675e1f7e86c1788c56a7a1eb335fd083ed`. Its OCI version is
+`0.28.0+gfx906.1`, and its OCI revision points to that commit. GitHub Packages
+authorization was not completed during the release window, so the image has
+not yet been pushed. The immutable digest and anonymous-pull result must be
+added here before this tag is described as publicly deployable. No `latest`
+tag is created.
 
 ## Validation
 
@@ -48,3 +53,10 @@ The hardware results, including exact throughput and optional-feature startup
 times, are recorded in the [release validation](validation-v0.28.0-gfx906.1.md).
 All seven optional compatibility smokes passed. They remain default-off unless
 the compatibility matrix says otherwise.
+
+## Release assets
+
+The [GitHub release](https://github.com/David-Lzy/vllm-gfx906/releases/tag/v0.28.0-gfx906.1)
+includes a verified full-reference Git bundle, compact experiment evidence,
+and a SHA256 manifest. These assets preserve the deleted experiment heads
+without keeping a branch farm in the active repository.
