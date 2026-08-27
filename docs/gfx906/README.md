@@ -25,6 +25,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [v0.26 roadmap](roadmap-v0.26.md)
 - [v0.27 exploration roadmap](roadmap-v027.md)
 - [v0.28.0 gfx906.1 release](release-v0.28.0-gfx906.1.md)
+- [v0.28.0 gfx906.1 validation](validation-v0.28.0-gfx906.1.md)
 - [Repository cleanup record](repository-cleanup-20260828.md)
 - [Experiment summary](experiment-summary-v0.28.md)
 - [v0.27 selected-backport report](phase-16-v027-selected-backports.md)

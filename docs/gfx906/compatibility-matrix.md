@@ -14,7 +14,7 @@ does not imply support for every checkpoint using the same architecture.
 | Qwen3.8 27B AWQ TP4 | development profile | opt-in | Text/image/JSON and 32K cache-hit decode |
 | Qwen3.8 packed INT8 TP4 | development profile | opt-in | Numerical fix and Phase 153 comparison |
 | Qwen3.6 27B AWQ TP4 | compatibility profile | opt-in | Text/image/JSON and SplitKV smoke |
-| Qwen3.5 35B-A3B BF16 TP4 | compatibility profile | opt-in | Ordinary TP4 passed; expert parallelism rejected |
+| Qwen3.5 35B-A3B BF16 TP4 | compatibility profile | opt-in | Release text/image/JSON smoke passed; expert parallelism rejected |
 | `gfx906_gptq` backend | supported | selected in examples | Classic W4A16 and packed INT8 paths |
 | SplitKV head-256 | supported | off | Enable with `VLLM_ROCM_ENABLE_GFX906_SPLITKV=1` |
 | SplitKV-29 | long-context profile | off | Add max-splits 32 and force-splits 29 |
@@ -22,8 +22,8 @@ does not imply support for every checkpoint using the same architecture.
 | GDN output normalization | experimental | off | Small positive kernels, neutral/negative model results |
 | FP8 E4M3 KV cache | capacity profile | off | Software path; MI50 has no native FP8 acceleration |
 | TurboQuant KV | compatibility profile | off | Capacity increased; latency did not clear default gate |
-| MTP | compatibility only | off | Model-specific and not a production throughput default |
-| DFlash | compatibility only | off | No general production gain established |
+| MTP | compatibility only | off | Qwen3.5 MTP1 release smoke passed; no production throughput claim |
+| DFlash | compatibility only | off | Release smoke passed; draft model does not consume external multimodal embeddings |
 | Expert parallelism | rejected on gfx906 | off | TP4+EP regressed; DP4+EP could not retain 100K KV |
 | FP8/NVFP4/MXFP4 weights | out of scope | off | Fast paths target newer hardware |
 
