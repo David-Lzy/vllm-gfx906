@@ -60,3 +60,11 @@ but the detailed request JSON was not. The runner now mounts the result
 directory explicitly, so follow-up runs preserve per-sample latency and smoke
 payload details. The omission does not invalidate the reported aggregate
 throughputs, worker distribution, or server-side health evidence.
+
+The original shell invocation also returned code 127 after both variants had
+finished and production was already healthy, reporting `18151: command not
+found` during runner closeout. It prevented only the script's automatic cache
+deletion; the cache was subsequently deleted manually and production health,
+model discovery, text/image smoke, and drained queues were independently
+verified. Reproduce and correct this closeout-only shell issue before using the
+runner unattended for a future maintenance window.
