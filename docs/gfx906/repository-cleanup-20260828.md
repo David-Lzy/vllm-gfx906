@@ -51,3 +51,24 @@ The local recovery archive was reduced to about 306 MiB by deleting a duplicate
 pre-tag bundle and an accidentally retained 930 MiB pre-commit environment.
 The public checksum asset was regenerated with relative names only. Independent
 containers, images, and caches belonging to other services were not removed.
+
+## GitHub Actions closeout
+
+The final Actions audit found one failed scheduled macOS Apple Silicon run from
+commit `5c3fbf16ced0`. That commit still contained the inherited upstream macOS
+workflow. Its dependency build and installation checks passed, then its
+unrelated `vllm serve` smoke failed. The gfx906 release commit `32ccc4a39ab6`
+subsequently removed that workflow together with the inherited PR bot, stale
+automation, and other non-gfx906 CI files, so the failure was historical and
+could not recur from current `main`.
+
+After recording the run metadata, 48 obsolete run records were removed: the
+macOS failure, one skipped stale run, five successful runs from the removed PR
+bot, and 41 failed or cancelled pre-commit attempts from superseded branches.
+Successful pre-commit evidence was retained. The post-cleanup workflow list
+contains only `pre-commit`, and every remaining Actions run at closeout is a
+completed successful invocation of that workflow.
+
+This history cleanup did not weaken the release gate. `main` still requires a
+pull request and the successful `pre-commit` status, enforces up-to-date checks,
+and rejects force-push and branch deletion.
