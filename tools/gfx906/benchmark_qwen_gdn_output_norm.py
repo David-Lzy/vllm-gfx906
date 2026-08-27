@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Screen Qwen GDN output-norm reshape elision at exact rank-local shapes."""
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ import torch
 
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.layers.layernorm import RMSNormGated
-
+from vllm.platforms import current_platform
 
 SHAPES = {
     "qwen35_tp1_c1": (1, 32, 128),
@@ -30,8 +33,8 @@ def percentile(values: list[float], fraction: float) -> float:
 def time_call(fn, repeats: int) -> list[float]:
     samples: list[float] = []
     for _ in range(repeats):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = torch.Event(enable_timing=True)
+        end = torch.Event(enable_timing=True)
         start.record()
         fn()
         end.record()
@@ -91,14 +94,16 @@ def run_shape(
     for _ in range(warmups):
         control()
         candidate()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     control_output = control()
     candidate_output = candidate()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     max_abs_error = float(
         (control_output.float() - candidate_output.float()).abs().max().detach()
     )
-    allclose = bool(torch.allclose(control_output, candidate_output, atol=atol, rtol=rtol))
+    allclose = bool(
+        torch.allclose(control_output, candidate_output, atol=atol, rtol=rtol)
+    )
     if not allclose:
         raise RuntimeError(f"{label} mismatch: max_abs_error={max_abs_error}")
 
@@ -132,11 +137,14 @@ def main() -> None:
     parser.add_argument("--rtol", type=float, default=0.005)
     parser.add_argument("--include-samples", action="store_true")
     args = parser.parse_args()
-    if not torch.cuda.is_available() or not 0 <= args.device_index < torch.cuda.device_count():
+    if (
+        not torch.accelerator.is_available()
+        or not 0 <= args.device_index < torch.accelerator.device_count()
+    ):
         raise RuntimeError(f"ROCm device index {args.device_index} is unavailable")
 
     torch.manual_seed(142)
-    torch.cuda.set_device(args.device_index)
+    torch.accelerator.set_device_index(args.device_index)
     device = f"cuda:{args.device_index}"
     # RMSNormGated is a vLLM CustomOp and therefore needs the normal runtime
     # configuration context even in this direct, server-free microbenchmark.
@@ -154,13 +162,11 @@ def main() -> None:
             )
             for label, shape in SHAPES.items()
         }
-    device_props = torch.cuda.get_device_properties(args.device_index)
     print(
         json.dumps(
             {
                 "device": {
-                    "name": device_props.name,
-                    "multi_processor_count": device_props.multi_processor_count,
+                    "name": current_platform.get_device_name(args.device_index),
                 },
                 "results": results,
             },

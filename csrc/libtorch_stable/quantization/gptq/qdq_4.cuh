@@ -128,7 +128,7 @@ __forceinline__ __device__ void dequant_4bit_8_gptq(const uint32_t q_0,
     dq[1] = __hfma2(q1.as_half2, inv16, z1z16[1]);
 #else
     dq[1] = __hfma2(q1.as_half2, y1y16[1],
-                    z1z16[1]);               // half2( q[2] - z, q[3] - z )
+                    z1z16[1]);  // half2( q[2] - z, q[3] - z )
 #endif
     dq[2] = __hadd2(q2.as_half2, z1z16[0]);  // half2( q[4] - z, q[5] - z )
 #if defined(VLLM_GFX906_LEGACY_QGEMM)

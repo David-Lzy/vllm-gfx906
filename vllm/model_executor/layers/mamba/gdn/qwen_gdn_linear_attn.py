@@ -460,9 +460,11 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output_gate_type = getattr(config, "output_gate_type", "silu")
         if output_gate_type == "swish":
             output_gate_type = "silu"
-        assert output_gate_type in ["silu", "swish", "sigmoid"], (
-            f"unsupported {output_gate_type=}"
-        )
+        assert output_gate_type in [
+            "silu",
+            "swish",
+            "sigmoid",
+        ], f"unsupported {output_gate_type=}"
 
         self.norm = RMSNormGated(
             self.head_v_dim,
@@ -598,7 +600,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         return (
             current_platform.is_cuda()
             and not self.gqa_interleaved_layout
-            and isinstance(quant_config, (AutoAWQConfig, AutoGPTQConfig, INCConfig))
+            and isinstance(quant_config, AutoAWQConfig | AutoGPTQConfig | INCConfig)
         )
 
     def split_ba(self, ba: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

@@ -15,6 +15,12 @@ permissions:
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
+    env:
+      # A release bridge replaces most of the upstream tree at once. In that
+      # case, lint the gfx906 delta from the pinned upstream release instead of
+      # treating every upstream v0.23 -> v0.28 change as a fork-owned edit.
+      GFX906_UPSTREAM_RELEASE_BASE: 2cf0a6915ce544dc493a0990f2ea38d81601128a
+      GFX906_RELEASE_BRIDGE_THRESHOLD: 500
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -31,4 +37,22 @@ jobs:
           if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
             BASE_SHA="$(git merge-base HEAD origin/main)"
           fi
-          pre-commit run --from-ref "${BASE_SHA}" --to-ref HEAD --show-diff-on-failure
+
+          changed_count="$(git diff --name-only --diff-filter=ACMR "${BASE_SHA}"...HEAD | wc -l)"
+          if [ "${changed_count}" -gt "${GFX906_RELEASE_BRIDGE_THRESHOLD}" ] && \
+             git merge-base --is-ancestor "${GFX906_UPSTREAM_RELEASE_BASE}" HEAD; then
+            echo "Release bridge detected (${changed_count} files); using pinned upstream base."
+            BASE_SHA="${GFX906_UPSTREAM_RELEASE_BASE}"
+          fi
+
+          mapfile -t changed_files < <(
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}"...HEAD
+          )
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "No added, copied, modified, or renamed files to check."
+            exit 0
+          fi
+
+          printf 'Checking %s fork-owned files.\n' "${#changed_files[@]}"
+          pre-commit run --files "${changed_files[@]}" --hook-stage manual \
+            --show-diff-on-failure

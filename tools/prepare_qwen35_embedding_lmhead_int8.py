@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Create a copy-on-write INT8 embedding/lm-head Qwen3.5 checkpoint.
 
 Only the two selected safetensor shards, model config, and weight index are
@@ -73,7 +74,7 @@ def load_shard(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
     tensors: dict[str, torch.Tensor] = {}
     with safe_open(path, framework="pt", device="cpu") as handle:
         metadata = dict(handle.metadata() or {"format": "pt"})
-        for name in handle.keys():
+        for name in handle:
             tensors[name] = handle.get_tensor(name)
     return tensors, metadata
 

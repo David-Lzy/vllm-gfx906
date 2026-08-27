@@ -405,9 +405,8 @@ __global__ void LLGemmB4_kernel(const scalar_t* in_a, const scalar_t* in_b,
     for (int batch = 0; batch < BATCH_SIZE; ++batch) {
       const int batch_idx = batch_start + batch;
       if (batch_idx < N) {
-        acc[batch][qwarpid] = qthreadid < num_warps
-                                  ? red_smem[batch][qwarpid][qthreadid]
-                                  : 0.f;
+        acc[batch][qwarpid] =
+            qthreadid < num_warps ? red_smem[batch][qwarpid][qthreadid] : 0.f;
 #pragma unroll
         for (int mask = 16 / 2; mask >= 1; mask /= 2) {
           acc[batch][qwarpid] += __shfl_xor(acc[batch][qwarpid], mask);
@@ -429,8 +428,7 @@ torch::Tensor LLMMB4(at::Tensor& in_a, at::Tensor& in_b) {
   const auto K = in_a.size(1);
   const auto N = in_b.size(0);
 
-  TORCH_CHECK(N > 1 && N <= 8,
-              "Activation batch size must be in [2, 8].");
+  TORCH_CHECK(N > 1 && N <= 8, "Activation batch size must be in [2, 8].");
   TORCH_CHECK(in_a.dtype() == in_b.dtype());
   TORCH_CHECK(in_b.dtype() == torch::kFloat16 ||
               in_b.dtype() == torch::kBFloat16);

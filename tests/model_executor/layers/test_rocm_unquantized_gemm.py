@@ -68,9 +68,7 @@ def test_rocm_unquantized_gemm_gfx906_llmm1_path(monkeypatch):
 
 
 @pytest.mark.parametrize("num_tokens", [2, 4, 8])
-def test_rocm_unquantized_gemm_gfx906_batched_llmmb4_path(
-    monkeypatch, num_tokens
-):
+def test_rocm_unquantized_gemm_gfx906_batched_llmmb4_path(monkeypatch, num_tokens):
     x = torch.randn(num_tokens, 64, dtype=torch.float16)
     weight = torch.randn(128, 64, dtype=torch.float16)
 

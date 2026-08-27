@@ -22,20 +22,20 @@ namespace vllm {
 namespace gptq {
 
 #if defined(VLLM_GFX906_LEGACY_QGEMM)
-#define BLOCK_KN_SIZE 256
-#define MAX_Q_GEMM_ROWS 32
-#define MAX_Q_GEMM_ROWS_8BIT 32
-#define VLLM_GPTQ_LAUNCH_BOUNDS __launch_bounds__(BLOCK_KN_SIZE)
-#ifndef VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
-#define VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK 8
-#endif
-#define BLOCK_M_SIZE_MAX VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
+  #define BLOCK_KN_SIZE 256
+  #define MAX_Q_GEMM_ROWS 32
+  #define MAX_Q_GEMM_ROWS_8BIT 32
+  #define VLLM_GPTQ_LAUNCH_BOUNDS __launch_bounds__(BLOCK_KN_SIZE)
+  #ifndef VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
+    #define VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK 8
+  #endif
+  #define BLOCK_M_SIZE_MAX VLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK
 #else
-#define BLOCK_KN_SIZE 128
-#define MAX_Q_GEMM_ROWS 50
-#define MAX_Q_GEMM_ROWS_8BIT 24
-#define VLLM_GPTQ_LAUNCH_BOUNDS
-#define BLOCK_M_SIZE_MAX 8
+  #define BLOCK_KN_SIZE 128
+  #define MAX_Q_GEMM_ROWS 50
+  #define MAX_Q_GEMM_ROWS_8BIT 24
+  #define VLLM_GPTQ_LAUNCH_BOUNDS
+  #define BLOCK_M_SIZE_MAX 8
 #endif
 #define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define MAX_ALT_GEMM_ROWS 8
@@ -74,11 +74,10 @@ __forceinline__ __device__ half2 dot22_8(half2 (&dq)[4], const half* a_ptr,
 }
 
 #if defined(VLLM_GFX906_LEGACY_QGEMM)
-__forceinline__ __device__ float dot22_8_f(half2 (&dq)[4],
-                                           const half* a_ptr) {
+__forceinline__ __device__ float dot22_8_f(half2 (&dq)[4], const half* a_ptr) {
   float result = {};
   const half2* a2_ptr = (const half2*)a_ptr;
-#pragma unroll
+  #pragma unroll
   for (int i = 0; i < 4; i++) {
     result = __ockl_fdot2(dq[i], *a2_ptr++, result, true);
   }
@@ -88,7 +87,7 @@ __forceinline__ __device__ float dot22_8_f(half2 (&dq)[4],
 __forceinline__ __device__ float dot22_8_f(half2 (&dq)[4], const half* a_ptr) {
   half2 result = {};
   const half2* a2_ptr = (const half2*)a_ptr;
-#pragma unroll
+  #pragma unroll
   for (int i = 0; i < 4; i++) result = __hfma2(dq[i], *a2_ptr++, result);
   return __half2float(__low2half(result)) + __half2float(__high2half(result));
 }
@@ -212,8 +211,7 @@ typedef void (*fp_gemm_half_q_half_gptq_kernel)(const half*, const uint32_t*,
                                                 const bool, const int*);
 
 template <bool first_block, int m_count>
-VLLM_GPTQ_LAUNCH_BOUNDS
-__global__ void gemm_half_q_half_gptq_4bit_kernel(
+VLLM_GPTQ_LAUNCH_BOUNDS __global__ void gemm_half_q_half_gptq_4bit_kernel(
     const half* __restrict__ a, const uint32_t* __restrict__ b_q_weight,
     const uint32_t* __restrict__ b_gptq_qzeros,
     const half* __restrict__ b_gptq_scales, half* __restrict__ c,
@@ -704,7 +702,7 @@ __global__ void gemm_half_q_half_gptq_8bit_kernel(
                      zeros[3] + zero_offset);
 
 #if defined(VLLM_GFX906_LEGACY_QGEMM)
-#pragma unroll
+  #pragma unroll
       for (int m = 0; m < m_count; m++) {
         block_c[m][0] = fma(dot22_8_f(dq[0], a_ptr + m * a_stride), scales[0],
                             block_c[m][0]);
@@ -1909,10 +1907,11 @@ torch::stable::Tensor gptq_gemm(torch::stable::Tensor a,
   // The INT8 kernel accumulates partial K blocks with atomics. Unlike the
   // W4 path, it has no safe in-kernel cross-block zeroing point, so make its
   // output deterministically zeroed before the first atomic add.
-  auto c = bit == 8
-               ? torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)})
-               : torch::stable::empty({a.size(0), b_q_weight.size(1)},
-                                      a.scalar_type(), std::nullopt, a.device());
+  auto c =
+      bit == 8
+          ? torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)})
+          : torch::stable::empty({a.size(0), b_q_weight.size(1)},
+                                 a.scalar_type(), std::nullopt, a.device());
 #else
   auto c = torch::stable::new_zeros(a, {a.size(0), b_q_weight.size(1)});
 #endif

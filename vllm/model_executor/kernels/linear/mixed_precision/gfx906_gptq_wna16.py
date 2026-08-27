@@ -79,16 +79,22 @@ class Gfx906GPTQWNA16LinearKernel(MPLinearKernel):
         self._transform_param(layer, self.w_s_name, transform_w_s)
 
         if c.zero_points:
-            qzeros = getattr(layer, self.w_zp_name, None)
+            w_zp_name = self.w_zp_name
+            assert w_zp_name is not None
+            qzeros = getattr(layer, w_zp_name, None)
             if qzeros is not None:
                 replace_parameter(
                     layer,
-                    self.w_zp_name,
-                    torch.nn.Parameter(qzeros.data.t().contiguous(), requires_grad=False),
+                    w_zp_name,
+                    torch.nn.Parameter(
+                        qzeros.data.t().contiguous(), requires_grad=False
+                    ),
                 )
         else:
             self.w_zp_name = "qzeros"
-            group_size = c.group_size if c.group_size != -1 else c.partition_weight_shape[0]
+            group_size = (
+                c.group_size if c.group_size != -1 else c.partition_weight_shape[0]
+            )
             groups = c.partition_weight_shape[0] // group_size
             out_features = c.partition_weight_shape[1]
             zeros = torch.full(

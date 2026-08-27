@@ -440,9 +440,7 @@ def kernel_paged_attention_2d_gfx906_splitkv(
         other=0.0,
     )
 
-    max_logits = tl.full(
-        [num_queries_per_kv_padded], float("-inf"), dtype=tl.float32
-    )
+    max_logits = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
     exp_sums = tl.zeros([num_queries_per_kv_padded], dtype=tl.float32)
     acc = tl.zeros([num_queries_per_kv_padded, HEAD_SIZE_PADDED], dtype=tl.float32)
     block_table_offset = seq_idx * block_table_stride
@@ -732,11 +730,13 @@ def paged_attention_2d_gfx906_splitkv_decode(
         device=query.device,
         dtype=torch.float32,
     )
-    kernel_paged_attention_2d_gfx906_splitkv[(
-        batch_size,
-        num_kv_heads,
-        num_splits,
-    )](
+    kernel_paged_attention_2d_gfx906_splitkv[
+        (
+            batch_size,
+            num_kv_heads,
+            num_splits,
+        )
+    ](
         mid_out,
         mid_lse,
         query,
