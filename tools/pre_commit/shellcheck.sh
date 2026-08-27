@@ -18,7 +18,20 @@ if ! [ -x "$(command -v shellcheck)" ]; then
     export PATH="$PATH:$(pwd)/shellcheck-${scversion}"
 fi
 
-# TODO - fix warnings in .buildkite/scripts/hardware_ci/run-amd-test.sh
-find . -path ./.git -prune -o -name "*.sh" \
-  -not -path "./.buildkite/scripts/hardware_ci/run-amd-test.sh" -print0 | \
-  xargs -0 sh -c "for f in \"\$@\"; do git check-ignore -q \"\$f\" || shellcheck -s bash \"\$f\"; done" --
+run_shellcheck() {
+    for file in "$@"; do
+        git check-ignore -q "$file" || shellcheck -s bash "$file"
+    done
+}
+
+if [ "$#" -gt 0 ]; then
+    run_shellcheck "$@"
+else
+    # TODO - fix warnings in .buildkite/scripts/hardware_ci/run-amd-test.sh
+    while IFS= read -r -d '' file; do
+        run_shellcheck "$file"
+    done < <(
+        find . -path ./.git -prune -o -name "*.sh" \
+          -not -path "./.buildkite/scripts/hardware_ci/run-amd-test.sh" -print0
+    )
+fi
