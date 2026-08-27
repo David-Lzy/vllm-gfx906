@@ -1,0 +1,62 @@
+# Positive-gain retention policy
+
+## Purpose
+
+gfx906 improvements are expensive to discover and reproduce. A correct,
+workload-specific improvement is retained even when it is too small or too
+narrow to become the default release configuration.
+
+This policy separates retaining an optimization from enabling it by default.
+The latter still requires a broader performance and production-readiness
+decision.
+
+## Classifications
+
+| Classification | Meaning | Default behavior |
+| --- | --- | --- |
+| retained-default | Reproducibly improves the primary workload without regressions | Eligible for the release image after ordinary gates |
+| retained-targeted | Improves a defined model, shape, or context regime | Guarded and disabled outside that regime |
+| provisional-positive | A single clean measurement is positive but its confidence interval is not yet known | Source, patch, and harness stay available; do not enable automatically |
+| rejected | Incorrect, unstable, or non-positive in its stated target | Keep the report, but do not carry the implementation forward |
+
+A target-specific result may remain retained even if it regresses a different
+target. Its guard must make that distinction explicit rather than silently
+changing the common serving path.
+
+## Evidence required
+
+Every retained entry records the source revision, guard, numerical or output
+checks, benchmark command, and raw results. Small gains are measured with
+paired warm runs under the same image, model, topology, cache state, and
+request mix. A gain whose confidence interval crosses zero is
+`provisional-positive`, not discarded.
+
+No result is promoted to a production default solely because it is positive.
+It must also preserve routine text, image, and JSON behavior and avoid a
+meaningful regression in the primary serving workload.
+
+## Current retained examples
+
+| Optimization | Scope | Status |
+| --- | --- | --- |
+| gfx906 legacy QGEMM bundle, including K=256 launch geometry | Qwen AWQ W4A16 linear layers on gfx906 | retained-targeted; built only with the gfx906 CMake guard |
+| gfx906 legacy QGEMM row-4 tiling | Qwen3.5 9B AWQ C8 decode | retained-targeted; repeated +2.52% C8 result, default off |
+| gfx906 legacy QGEMM exact-M8 row-4 dispatch | Qwen3.5 9B AWQ C8 decode, row-8 elsewhere | retained-targeted; repeated +2.85% C8 result, call-attributed in Phase 68 and confirmed fastest across every row geometry in Phase 69 |
+| gfx906 SplitKV composition | Qwen3.8 long-context decode | retained-targeted; long-context profile only |
+| Qwen3.6 fused QK/RMSNorm/MRoPE/gate composition | Qwen3.6 27B packed-INT8 TP4 fixed-128 decode | provisional-positive; Phase 135 measured +0.85% C1 and +1.10% C8 in one matched window, so source and harness remain but default stays off |
+| Qwen3.6 packed/fused SplitKV-29 composition | Qwen3.6 27B packed-INT8 TP4 32K prefix-cache-hit decode | retained-targeted; Phase 138 measured +14.83% at 32K but -6.77% C8, so it stays default-off and is not a general packed/fused profile |
+| GDN output-projection reshape elision | Qwen3.8 32K cache-hit decode | provisional-positive; retained as a default-off overlay because short decode regressed |
+| Qwen3 vision encoder `torch.compile` | Qwen3.5 9B AWQ | provisional-positive; source and benchmark retained, but no repeatable image-speed gain, so default off |
+
+The legacy QGEMM bundle is intentionally treated as one coherent optimization:
+K=256 geometry, QDQ behavior, accumulation, and output initialization are not
+independent knobs. The retained implementation is documented by the fork's
+legacy-QGEMM phase and uses a gfx906-only build guard.
+
+## Revalidation and removal
+
+Retained paths are re-run whenever their enclosing kernel, PyTorch, Triton,
+or model interface changes. They are removed only after a replacement is
+proven correct and at least as fast for the same target, or after a reproducible
+correctness or stability failure. Raw benchmark evidence remains in the phase
+record after removal.

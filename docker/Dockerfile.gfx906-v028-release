@@ -1,0 +1,108 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=aiinfos/vllm-gfx906-mobydick:v0.23.1rc0.x-rocm7.2.1-pytorch2.11.0@sha256:5ac05f53ab784b374a31bd9162ab12b2ae95c520d4a8a2c9035c743b40358914
+FROM ${BASE_IMAGE}
+
+ARG VLLM_BUILD_VERSION=0.28.0+gfx906.1
+ARG VLLM_RELEASE_REVISION
+ARG TRITON_REPOSITORY=https://github.com/ai-infos/triton-gfx906.git
+ARG TRITON_REVISION=82957a511217fdfefea434c05ee2c21aa78622ac
+
+ENV VLLM_TARGET_DEVICE=rocm \
+    PYTORCH_ROCM_ARCH=gfx906 \
+    VLLM_ROCM_USE_AITER=0 \
+    VLLM_USE_PRECOMPILED=0 \
+    VLLM_USE_PRECOMPILED_RUST=0 \
+    CMAKE_BUILD_TYPE=Release \
+    MAX_JOBS=12 \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_BUILD_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/opt/vllm-venv/bin:/root/.cargo/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:${PATH} \
+    VIRTUAL_ENV=/opt/vllm-venv \
+    ROCBLAS_TENSILE_LIBPATH=/opt/rocm/lib/rocblas/library
+
+LABEL org.opencontainers.image.source="https://github.com/David-Lzy/vllm-gfx906" \
+      org.opencontainers.image.version="${VLLM_BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VLLM_RELEASE_REVISION}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.description="vLLM 0.28.0 for AMD gfx906 with validated, default-safe Qwen paths"
+
+RUN test -n "${VLLM_RELEASE_REVISION}" \
+    && apt-get update -q -y \
+    && apt-get install -q -y --no-install-recommends \
+        ca-certificates \
+        ccache \
+        curl \
+        libprotobuf-dev \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh \
+        -o /tmp/uv-install.sh \
+    && env UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain 1.95 \
+    && uv venv --system-site-packages --python /usr/bin/python /opt/vllm-venv \
+    && uv pip install --python /opt/vllm-venv/bin/python --upgrade \
+        'cmake>=3.26.1,<4' \
+        'packaging>=24.2' \
+        'pybind11>=2.13' \
+        'setuptools>=77.0.3,<80.0.0' \
+        'setuptools-scm>=8' \
+        'setuptools-rust>=1.9.0' \
+        jinja2 \
+        ninja \
+        wheel
+
+COPY patches/triton-3.6-gfx906/0001-amd-scf-pointer-intersection.patch \
+    /opt/gfx906-patches/0001-amd-scf-pointer-intersection.patch
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/ccache \
+    git clone --filter=blob:none "${TRITON_REPOSITORY}" /opt/triton-gfx906 \
+    && git -C /opt/triton-gfx906 checkout --detach "${TRITON_REVISION}" \
+    && test "$(git -C /opt/triton-gfx906 rev-parse HEAD)" = "${TRITON_REVISION}" \
+    && git -C /opt/triton-gfx906 apply --check \
+        /opt/gfx906-patches/0001-amd-scf-pointer-intersection.patch \
+    && git -C /opt/triton-gfx906 apply \
+        /opt/gfx906-patches/0001-amd-scf-pointer-intersection.patch \
+    && cd /opt/triton-gfx906 \
+    && /opt/vllm-venv/bin/python setup.py bdist_wheel \
+        --dist-dir /opt/triton-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps \
+        --force-reinstall /opt/triton-wheel/triton-*.whl
+
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/workspace/vllm/rust/target \
+    export CCACHE_DIR=/root/.cache/ccache \
+    && CMAKE_ARGS='-DVLLM_GFX906_LEGACY_QGEMM=ON -DVLLM_GFX906_LEGACY_QGEMM_ROWS_PER_BLOCK=8 -DVLLM_GFX906_LEGACY_QGEMM_C8_ROWS_PER_BLOCK=4' \
+        VLLM_REQUIRE_RUST_FRONTEND=1 \
+        /opt/vllm-venv/bin/python setup.py bdist_wheel \
+        --dist-dir /opt/vllm-wheel \
+    && uv pip install --python /opt/vllm-venv/bin/python --no-deps \
+        --force-reinstall /opt/vllm-wheel/vllm-*.whl
+
+RUN /opt/vllm-venv/bin/python - <<'PY'
+import torch
+import triton
+import vllm
+
+assert torch.version.hip is not None
+assert torch.__version__.startswith("2.11")
+assert triton.__version__.startswith("3.6")
+assert vllm.__version__ == "0.28.0+gfx906.1"
+print(f"vllm={vllm.__version__}")
+print(f"torch={torch.__version__}")
+print(f"hip={torch.version.hip}")
+print(f"triton={triton.__version__}")
+PY
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/vllm-venv/bin/vllm"]
+CMD ["--help"]

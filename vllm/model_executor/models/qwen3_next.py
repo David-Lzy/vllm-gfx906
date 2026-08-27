@@ -8,6 +8,7 @@ from itertools import islice
 import torch
 from torch import nn
 
+from vllm import envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
@@ -334,6 +335,10 @@ class Qwen3NextAttention(nn.Module):
             self.attn_output_gate
             and getattr(self.rotary_emb, "is_neox_style", False)
             and current_platform.is_cuda_alike()
+            and (
+                not current_platform.is_rocm()
+                or envs.VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE
+            )
             and supports_dtype
             and (text_only or supports_mrope)
         )

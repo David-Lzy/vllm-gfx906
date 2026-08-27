@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_GFX906_SPLITKV_QUERY_ROWS: Literal["8", "16"] = "16"
     VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS: str = ""
     VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS: str = ""
+    VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE: bool = False
     VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM: bool = False
     VLLM_USE_HW_AGNOSTIC: bool = False
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
@@ -1232,12 +1233,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS": lambda: os.getenv(
         "VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS", ""
     ),
+    # The Qwen3.6 fused QK-normalization/MRoPE/gate kernel is retained for
+    # targeted gfx906 evaluation, but it regressed mixed production traffic.
+    # CUDA keeps the upstream default; ROCm requires an explicit opt-in.
+    "VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE": lambda: (
+        os.getenv("VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE", "0")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
     # Opt-in reshape elision for Qwen3.5 GDN output normalization on gfx906.
     # The generic path remains the safe default until model-level parity passes.
     "VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM": lambda: (
-        os.getenv("VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM", "0")
-        .strip()
-        .lower()
+        os.getenv("VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM", "0").strip().lower()
         in ("1", "true")
     ),
     # Selects hw-agnostic layers for HF transformer backend

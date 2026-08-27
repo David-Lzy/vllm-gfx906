@@ -1,110 +1,158 @@
-<!-- markdownlint-disable MD001 MD041 -->
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width=55%>
-  </picture>
-</p>
+# vLLM gfx906
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
+Experimental vLLM maintenance work for AMD `gfx906` GPUs, including Radeon
+VII, MI50, and MI60. This fork exists to make old-but-capable AMD hardware a
+first-class, evidence-driven development target while remaining easy to compare
+with upstream vLLM.
 
-<p align="center">
-| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
-</p>
+> [!WARNING]
+> This is not an official vLLM release and is not a general ROCm distribution.
+> Support claims apply only to the exact source revision, software stack, model,
+> and hardware recorded in the accompanying benchmark evidence. Do not deploy
+> `main` or an unpinned image to production without reproducing the required
+> checks on your own hardware.
 
-🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
-For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
+## Scope
 
----
+- Maintain and test gfx906 compatibility on current vLLM integration lines.
+- Measure changes on real MI50-class hardware before treating them as usable.
+- Keep Qwen text and image workflows as the primary regression surface.
+- Preserve focused patches and benchmark evidence, including negative results.
+- Keep upstream-compatible changes reviewable; this fork is not a wholesale
+  replacement for upstream ROCm support.
 
-## About
+## Current Status
 
-vLLM is a fast and easy-to-use library for LLM inference and serving.
+The public documentation describes an active, experimental v0.28 gfx906
+integration line. The validated small-model reference is Qwen3.5 9B AWQ with
+text and image inputs. Qwen3.8 27B AWQ can be made functionally compatible in targeted
+configurations, but it is an experimental performance path rather than a
+production recommendation on MI50.
 
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
+The project does not publish a floating `latest` image. Build and deployment
+artifacts are only meaningful when accompanied by an immutable source commit,
+image digest, model revision, and hardware result.
 
-vLLM is fast with:
+| Area | Position |
+| --- | --- |
+| Target GPUs | Radeon VII, MI50, MI60 (`gfx906`) |
+| Primary validation model | Qwen3.5 9B AWQ, text plus image inputs |
+| Secondary research model | Qwen3.8 27B AWQ and related W4A16 formats |
+| Routine regression gate | text, one/two 256 x 256 images, JSON 3/3 |
+| Large image or video workloads | specialized tests, not a generic claim |
+| Production promotion | explicit canary and rollback review required |
 
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests, chunked prefill, prefix caching
-- Fast and flexible model execution with piecewise and full CUDA/HIP graphs
-- Quantization: FP8, MXFP8/MXFP4, NVFP4, INT8, INT4, GPTQ/AWQ, GGUF, compressed-tensors, ModelOpt, TorchAO, and [more](https://docs.vllm.ai/en/latest/features/quantization/index.html)
-- Optimized attention kernels including FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, and Triton
-- Optimized GEMM/MoE kernels for various precisions using CUTLASS, TRTLLM-GEN, CuTeDSL
-- Speculative decoding including n-gram, suffix, EAGLE, DFlash
-- Automatic kernel generation and graph-level transformations using torch.compile
-- Disaggregated prefill, decode, and encode
-
-vLLM is flexible and easy to use with:
-
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor, pipeline, data, expert, and context parallelism for distributed inference
-- Streaming outputs
-- Generation of structured outputs using xgrammar or guidance
-- Tool calling and reasoning parsers
-- OpenAI-compatible API server, plus Anthropic Messages API and gRPC support
-- Efficient multi-LoRA support for dense and MoE layers
-- Support for NVIDIA GPUs, AMD GPUs, Intel GPUs, and x86/ARM/PowerPC CPUs. Additionally, diverse hardware plugins such as Google TPUs, Intel Gaudi, IBM Spyre, Huawei Ascend, Rebellions NPU, Apple Silicon, MetaX GPU, and more.
-
-vLLM seamlessly supports 200+ model architectures on Hugging Face, including:
-
-- Decoder-only LLMs (e.g., Llama, Qwen, Gemma)
-- Mixture-of-Expert LLMs (e.g., Mixtral, DeepSeek-V3, Qwen-MoE, GPT-OSS)
-- Hybrid attention and state-space models (e.g., Mamba, Qwen3.5)
-- Multi-modal models (e.g., LLaVA, Qwen-VL, Pixtral)
-- Embedding and retrieval models (e.g., E5-Mistral, GTE, ColBERT)
-- Reward and classification models (e.g., Qwen-Math)
-
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
+The detailed status, known limits, and exact benchmark conditions live in
+[`docs/gfx906/`](docs/gfx906/README.md). Start with the
+[compatibility matrix](docs/gfx906/compatibility-matrix.md) and
+[benchmark protocol](docs/gfx906/benchmark-protocol.md), not an old command
+copied from a container page.
 
 ## Getting Started
 
-Install vLLM with [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`:
+The versioned public image is:
 
-```bash
-uv pip install vllm
+```text
+ghcr.io/david-lzy/vllm-gfx906:v0.28.0-gfx906.1
 ```
 
-Or [build from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source) for development.
+There is deliberately no floating `latest` tag. The image is built from this
+repository in one pass on top of the pinned ROCm 7.2.1/PyTorch 2.11 gfx906
+base. Triton 3.6 is rebuilt from its pinned source commit with the retained
+conditional-pointer patch; no local Phase image is part of the build chain.
 
-Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
+### Single GPU
 
-- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)
-- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
-- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
+```bash
+export HF_CACHE_DIR=/srv/vllm/huggingface
+export VLLM_CACHE_DIR=/srv/vllm/cache
+./deploy/gfx906/run-single-gpu.sh
+curl http://127.0.0.1:8002/v1/models
+```
+
+### Four MI50 GPUs
+
+The validated high-throughput topology runs one TP1 worker per GPU behind a
+digest-pinned vLLM Router:
+
+```bash
+cd deploy/gfx906
+cp .env.example .env
+# Edit only the cache paths and model if required.
+docker compose --env-file .env \
+  -f docker-compose.tp1x4-router.yaml up -d
+curl http://127.0.0.1:8002/health
+```
+
+The public Compose binds to `127.0.0.1` by default and does not require
+`--privileged`. Initial model download and compiler warmup commonly take
+10-20 minutes. Model weights are never included in the image.
+
+### Optional gfx906 paths
+
+The release contains several measured narrow paths, all disabled by default:
+
+- `VLLM_ROCM_ENABLE_GFX906_SPLITKV=1` enables the head-256 Qwen SplitKV path.
+- `VLLM_ROCM_GFX906_SPLITKV_MAX_SPLITS=32` and
+  `VLLM_ROCM_GFX906_SPLITKV_FORCE_SPLITS=29` select the retained TP4
+  long-context profile.
+- `VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE=1` enables the Qwen3.6
+  fused QK/RMSNorm/MRoPE/gate path.
+- `VLLM_ROCM_ENABLE_GFX906_QWEN_GDN_OUTPUT_NORM=1` enables the measured GDN
+  output-normalization reshape elision.
+
+Do not combine optional paths without matching model-level evidence. The safe
+Qwen3.5 production profile leaves all four variables unset.
+
+### Build From Source
+
+Use a clean source checkout and keep model weights, build products, compiler
+caches, credentials, and deployment configuration outside Git:
+
+```bash
+git clone --recursive https://github.com/David-Lzy/vllm-gfx906.git
+cd vllm-gfx906
+git remote add upstream https://github.com/vllm-project/vllm.git
+git remote add mobydick https://github.com/ai-infos/vllm-gfx906-mobydick.git
+git remote -v
+./tools/gfx906/build-release-image.sh local/vllm-gfx906:v0.28.0-gfx906.1
+```
+
+Before building, confirm that the host ROCm kernel stack can see the device and
+that the intended PyTorch, ROCm, and Triton revisions have an explicit gfx906
+validation record. The release process documents the required source pinning,
+image provenance, canary, and rollback gates:
+
+- [gfx906 documentation index](docs/gfx906/README.md)
+- [release process](docs/gfx906/release-process.md)
+- [patch ledger](docs/gfx906/patch-ledger.md)
+- [benchmark protocol](docs/gfx906/benchmark-protocol.md)
+- [evidence lifecycle](docs/gfx906/evidence-lifecycle.md)
+
+## What This Fork Does Not Promise
+
+- Support for every vLLM model, quantization format, ROCm version, or AMD GPU.
+- MI300-, RDNA3-, CDNA3-, or Blackwell-specific performance paths on gfx906.
+- Fast FP8, NVFP4, MXFP4, or arbitrary compressed-weight inference on MI50.
+- A production-safe response to unreviewed third-party model checkpoints.
+- A container command that requires broad host mounts or privileged execution.
 
 ## Contributing
 
-We welcome and value any contributions and collaborations.
-Please check out [Contributing to vLLM](https://docs.vllm.ai/en/latest/contributing/index.html) for how to get involved.
+Keep each change narrow and reproducible. A contribution should identify the
+exact gfx906 target, the upstream base, the affected model and quantization
+path, correctness coverage, and before/after performance evidence. Do not
+submit model weights, caches, compiled artifacts, credentials, or local
+deployment files.
 
-## Citation
+For a potentially upstreamable fix, extract the smallest portable patch and
+benchmark it independently. A cross-fork GitHub "Compare & pull request"
+banner is not evidence that an entire experimental branch belongs upstream.
 
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
+## Relationship to Upstream
 
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
-```
-
-## Contact Us
-
-<!-- --8<-- [start:contact-us] -->
-- For technical questions and feature requests, please use GitHub [Issues](https://github.com/vllm-project/vllm/issues)
-- For discussing with fellow users, please use the [vLLM Forum](https://discuss.vllm.ai)
-- For coordinating contributions and development, please use [Slack](https://slack.vllm.ai)
-- For security disclosures, please use GitHub's [Security Advisories](https://github.com/vllm-project/vllm/security/advisories) feature
-- For collaborations and partnerships, please contact us at [collaboration@vllm.ai](mailto:collaboration@vllm.ai)
-<!-- --8<-- [end:contact-us] -->
-
-## Media Kit
-
-- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit)
+This repository is a downstream experimental fork of
+[vllm-project/vllm](https://github.com/vllm-project/vllm). It also preserves
+historical context from
+[ai-infos/vllm-gfx906-mobydick](https://github.com/ai-infos/vllm-gfx906-mobydick).
+Neither upstream project endorses every change or support claim made here.

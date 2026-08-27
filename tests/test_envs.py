@@ -146,6 +146,20 @@ def test_precompiled_install_flags_are_orthogonal() -> None:
         assert environment_variables["VLLM_USE_PRECOMPILED_RUST"]() is True
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, False), ("0", False), ("false", False), ("1", True), ("TRUE", True)],
+)
+def test_gfx906_qwen36_fusion_is_explicit_opt_in(
+    value: str | None, expected: bool
+) -> None:
+    name = "VLLM_ROCM_ENABLE_GFX906_QWEN36_FUSED_QK_ROPE_GATE"
+    environment = {} if value is None else {name: value}
+
+    with patch.dict(os.environ, environment, clear=True):
+        assert environment_variables[name]() is expected
+
+
 def test_rust_bench_auto_path_missing_fails_fast() -> None:
     with (
         patch.dict(os.environ, {"VLLM_USE_RUST_BENCH": "1"}, clear=True),
