@@ -70,6 +70,7 @@ machine-specific deployment configuration do not belong in this repository.
 - [Qwen3.5 TP1x4 v0.28 production canary](phase-148-qwen35-tp1x4-v028-production-canary.md)
 - [Qwen3.5 TP1x4 GDN output-norm Router A/B](phase-149-qwen35-tp1x4-gdn-output-norm-router-ab.md)
 - [Qwen3.5 TP1x4 queue-aware Router](phase-165-qwen35-queue-aware-router.md)
+- [Qwen3.5 TP1x4 global FIFO admission Router](phase-166-qwen35-global-fifo-router.md)
 - [Qwen3.5 multimodal truncation and profiling](phase-131-qwen35-mm-truncation-profiling.md)
 - [Compatibility matrix](compatibility-matrix.md)
 - [Patch ledger](patch-ledger.md)
