@@ -178,9 +178,7 @@ Compact local evidence hashes:
 
 ## Decision
 
-Do not promote this queue-aware policy and do not create Phase 166. Retain the
-implementation and evidence as a reproducible negative result. A future
-follow-up, if justified, should start from least in-flight and use fresh worker
-waiting as a penalty rather than making a 500 ms running snapshot the primary
-short-request depth signal. It must repeat the fixed C16 gate before consuming
-another full production replay.
+Do not promote this queue-aware policy. Retain the implementation and evidence
+as a reproducible negative result. A later, separately authorized Phase 166
+tested strict Router-owned FIFO admission without the rejected 500 ms metrics
+polling; see the Phase 166 report for its independent result.
