@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Aggregate Phase 165 per-round summaries and evaluate promotion gates."""
 
 from __future__ import annotations
@@ -9,7 +12,6 @@ import re
 import statistics
 from pathlib import Path
 from typing import Any
-
 
 ARM_PATTERN = re.compile(
     r"^(official-rr|patched-rr|least-inflight|queue-aware)-"
@@ -75,7 +77,9 @@ def collect(directory: Path) -> dict[str, dict[str, dict[str, Any]]]:
                 field: median([row.get(field) for row in rows]) for field in fields
             }
             result[arm][scenario]["rounds"] = len(rows)
-            result[arm][scenario]["failures"] = sum(row.get("total_failures", 0) for row in rows)
+            result[arm][scenario]["failures"] = sum(
+                row.get("total_failures", 0) for row in rows
+            )
             result[arm][scenario]["backend_request_count_matches"] = all(
                 row.get("all_backend_request_count_matches", False) for row in rows
             )
@@ -89,16 +93,20 @@ def evaluate(data: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
     replay_base = baseline.get("phase1-c32", {})
     replay = candidate.get("phase1-c32", {})
     p95_delta = percent_change(
-        replay.get("median_latency_p95_seconds"), replay_base.get("median_latency_p95_seconds")
+        replay.get("median_latency_p95_seconds"),
+        replay_base.get("median_latency_p95_seconds"),
     )
     p99_delta = percent_change(
-        replay.get("median_latency_p99_seconds"), replay_base.get("median_latency_p99_seconds")
+        replay.get("median_latency_p99_seconds"),
+        replay_base.get("median_latency_p99_seconds"),
     )
     throughput_delta = percent_change(
-        replay.get("median_requests_per_second"), replay_base.get("median_requests_per_second")
+        replay.get("median_requests_per_second"),
+        replay_base.get("median_requests_per_second"),
     )
     makespan_delta = percent_change(
-        replay.get("median_makespan_seconds"), replay_base.get("median_makespan_seconds")
+        replay.get("median_makespan_seconds"),
+        replay_base.get("median_makespan_seconds"),
     )
     idle_base = replay_base.get("median_idle_while_queued_ratio")
     idle = replay.get("median_idle_while_queued_ratio")
@@ -164,14 +172,17 @@ def evaluate(data: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
         and all(value is not None and value <= 0 for value in residual_values),
         "idle_reduction": idle_reduction is not None and idle_reduction >= 50.0,
         "idle_absolute": idle is not None and idle <= 0.25,
-        "phase1_tail": any(value is not None and value <= -10.0 for value in (p95_delta, p99_delta)),
+        "phase1_tail": any(
+            value is not None and value <= -10.0 for value in (p95_delta, p99_delta)
+        ),
         "phase1_throughput_or_makespan": (
             throughput_delta is not None
             and makespan_delta is not None
             and (throughput_delta >= 5.0 or makespan_delta <= -5.0)
         ),
         "fixed_regression": bool(fixed_present) and min(fixed_present) >= -3.0,
-        "dispatch_overhead": dispatch_overhead is not None and dispatch_overhead <= 0.002,
+        "dispatch_overhead": dispatch_overhead is not None
+        and dispatch_overhead <= 0.002,
     }
     return {
         "deltas_percent": {
@@ -194,7 +205,10 @@ def render_markdown(data: dict[str, Any], evaluation: dict[str, Any]) -> str:
     lines = [
         "# Phase 165 Router A/B scorecard",
         "",
-        "| Policy | Scenario | req/s | p95 s | p99 s | TTFT p95 bound s | idle while queued | failures |",
+        (
+            "| Policy | Scenario | req/s | p95 s | p99 s | TTFT p95 bound s "
+            "| idle while queued | failures |"
+        ),
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for arm in ("official-rr", "patched-rr", "least-inflight", "queue-aware"):
@@ -215,7 +229,8 @@ def render_markdown(data: dict[str, Any], evaluation: dict[str, Any]) -> str:
     lines.extend(
         (
             "",
-            f"Phase 166 eligible: **{'yes' if evaluation['eligible_for_phase166'] else 'no'}**",
+            "Phase 166 eligible: "
+            f"**{'yes' if evaluation['eligible_for_phase166'] else 'no'}**",
             "",
         )
     )
@@ -231,7 +246,9 @@ def main() -> int:
     data = collect(args.results)
     evaluation = evaluate(data)
     payload = {"results": data, "evaluation": evaluation}
-    args.json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.json.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     args.markdown.write_text(render_markdown(data, evaluation), encoding="utf-8")
     print(json.dumps(evaluation, indent=2, sort_keys=True))
     return 0 if evaluation["eligible_for_phase166"] else 1

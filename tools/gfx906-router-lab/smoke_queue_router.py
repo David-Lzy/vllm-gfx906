@@ -20,7 +20,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-
 MODEL_ID = "mock-qwen35"
 WORKER_PORTS = (18110, 18111, 18112, 18113)
 ROUTER_PORT = 18120
@@ -130,7 +129,9 @@ class MockWorkerHandler(BaseHTTPRequestHandler):
                             {
                                 "index": 0,
                                 "delta": {
-                                    "content": self.server.state.name if index == 0 else "."
+                                    "content": self.server.state.name
+                                    if index == 0
+                                    else "."
                                 },
                                 "finish_reason": None,
                             }
@@ -203,7 +204,7 @@ def get_text(port: int, path: str, timeout: float = 3) -> str:
 
 def metric_values(text: str, name: str) -> dict[str, float]:
     values: dict[str, float] = {}
-    pattern = re.compile(rf'^{re.escape(name)}\{{([^}}]*)\}}\s+([0-9.eE+-]+)$')
+    pattern = re.compile(rf"^{re.escape(name)}\{{([^}}]*)\}}\s+([0-9.eE+-]+)$")
     for line in text.splitlines():
         match = pattern.match(line)
         if not match:
@@ -227,7 +228,9 @@ def wait_for_router(port: int, timeout: float = 20) -> None:
     raise RuntimeError(f"router did not become healthy: {last_error}")
 
 
-def start_router(image: str, timeout_seconds: int, log_path: Path) -> subprocess.Popen[bytes]:
+def start_router(
+    image: str, timeout_seconds: int, log_path: Path
+) -> subprocess.Popen[bytes]:
     subprocess.run(
         ["docker", "rm", "-f", CONTAINER_NAME],
         stdout=subprocess.DEVNULL,
@@ -308,7 +311,9 @@ def run_contract(image: str, log_path: Path) -> dict[str, Any]:
         MockWorkerServer(("127.0.0.1", port), state)
         for port, state in zip(WORKER_PORTS, states, strict=True)
     ]
-    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True) for server in servers
+    ]
     for thread in threads:
         thread.start()
 
@@ -325,7 +330,9 @@ def run_contract(image: str, log_path: Path) -> dict[str, Any]:
         status, body = request_json(ROUTER_PORT, "QUEUE_SELECTION")
         selected = json.loads(body)["choices"][0]["message"]["content"]
         if status != 200 or selected != "worker3":
-            raise AssertionError(f"queue selection mismatch: status={status}, worker={selected}")
+            raise AssertionError(
+                f"queue selection mismatch: status={status}, worker={selected}"
+            )
         results["queue_selection"] = selected
         metrics = get_text(METRICS_PORT, "/metrics")
         dispatch_bounds = {
@@ -339,7 +346,8 @@ def run_contract(image: str, log_path: Path) -> dict[str, Any]:
         }
         if not {0.002, 0.003}.issubset(dispatch_bounds):
             raise AssertionError(
-                f"fine dispatch histogram buckets are missing: {sorted(dispatch_bounds)}"
+                "fine dispatch histogram buckets are missing: "
+                f"{sorted(dispatch_bounds)}"
             )
         results["dispatch_histogram_bounds_seconds"] = sorted(dispatch_bounds)
 
@@ -381,7 +389,9 @@ def run_contract(image: str, log_path: Path) -> dict[str, Any]:
         if slow_thread.is_alive() or slow_result.get("status") != 200:
             raise AssertionError(f"slow lifecycle request failed: {slow_result}")
         if fast_worker == slow_result.get("worker"):
-            raise AssertionError("fast request reused the worker with an active slow request")
+            raise AssertionError(
+                "fast request reused the worker with an active slow request"
+            )
         assert_inflight_zero()
         results["slow_worker"] = slow_result["worker"]
         results["fast_worker"] = fast_worker
@@ -402,7 +412,10 @@ def run_contract(image: str, log_path: Path) -> dict[str, Any]:
             }
         )
         connection.request(
-            "POST", "/v1/chat/completions", payload, {"Content-Type": "application/json"}
+            "POST",
+            "/v1/chat/completions",
+            payload,
+            {"Content-Type": "application/json"},
         )
         response = connection.getresponse()
         response.read(96)
@@ -456,7 +469,9 @@ def main() -> int:
         "--image", default="local/vllm-router:0.1.14-queue-aware-phase165"
     )
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--log", type=Path, default=Path("phase165-router-contract.log"))
+    parser.add_argument(
+        "--log", type=Path, default=Path("phase165-router-contract.log")
+    )
     args = parser.parse_args()
 
     result = {

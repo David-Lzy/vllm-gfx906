@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Benchmark one Router policy while sampling Router and vLLM metrics."""
 
 from __future__ import annotations
@@ -7,6 +10,7 @@ import argparse
 import asyncio
 import base64
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import math
@@ -22,7 +26,6 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 
 SAMPLE_METRICS = {
     "vllm:num_requests_running",
@@ -105,7 +108,12 @@ def png_data_url(seed: int, size: int = 256) -> str:
 
     def chunk(kind: bytes, payload: bytes) -> bytes:
         checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
-        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", checksum)
+        )
 
     data = b"\x89PNG\r\n\x1a\n"
     data += chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
@@ -123,7 +131,9 @@ def fixed_workload(
     items: list[WorkItem] = []
     classes = ("text", "image1", "image2")
     for index in range(count):
-        request_class = classes[index % len(classes)] if fixed_class == "mixed" else fixed_class
+        request_class = (
+            classes[index % len(classes)] if fixed_class == "mixed" else fixed_class
+        )
         content: list[dict[str, Any]] = [
             {
                 "type": "text",
@@ -160,7 +170,9 @@ def fixed_workload(
 def replay_workload(path: Path, model: str | None) -> list[WorkItem]:
     items: list[WorkItem] = []
     replay_root = path.resolve().parent
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             continue
         record = json.loads(line)
@@ -168,7 +180,9 @@ def replay_workload(path: Path, model: str | None) -> list[WorkItem]:
         if "payload_relpath" in record:
             payload_path = (replay_root / str(record["payload_relpath"])).resolve()
             if not payload_path.is_relative_to(replay_root):
-                raise ValueError(f"{path}:{line_number}: payload path escapes replay root")
+                raise ValueError(
+                    f"{path}:{line_number}: payload path escapes replay root"
+                )
             payload_bytes = payload_path.read_bytes()
             expected_sha = record.get("payload_sha256")
             actual_sha = hashlib.sha256(payload_bytes).hexdigest()
@@ -189,7 +203,9 @@ def replay_workload(path: Path, model: str | None) -> list[WorkItem]:
             body["model"] = model
             wire_body = None
         request_id = str(
-            record.get("id", f"replay-{int(record.get('request_index', line_number)):04d}")
+            record.get(
+                "id", f"replay-{int(record.get('request_index', line_number)):04d}"
+            )
         )
         request_class = str(record.get("class", record.get("stage", "phase1")))
         items.append(WorkItem(request_id, request_class, body, wire_body))
@@ -221,7 +237,11 @@ def parse_prometheus(text: str) -> list[dict[str, Any]]:
         except ValueError:
             continue
         samples.append(
-            {"name": match.group(1), "labels": parse_labels(match.group(2)), "value": value}
+            {
+                "name": match.group(1),
+                "labels": parse_labels(match.group(2)),
+                "value": value,
+            }
         )
     return samples
 
@@ -274,7 +294,10 @@ def post_json(url: str, body: bytes, timeout: float) -> tuple[int, bytes]:
         url,
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": "gfx906-router-lab/1"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "gfx906-router-lab/1",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -295,7 +318,12 @@ def response_summary(payload: bytes) -> tuple[int, int, bool, str]:
     choices = decoded.get("choices") or []
     if choices:
         content = str((choices[0].get("message") or {}).get("content") or "")
-    return completion_tokens, prompt_tokens, bool(content.strip()), hashlib.sha256(payload).hexdigest()
+    return (
+        completion_tokens,
+        prompt_tokens,
+        bool(content.strip()),
+        hashlib.sha256(payload).hexdigest(),
+    )
 
 
 async def fetch_metrics(
@@ -323,11 +351,18 @@ async def sample_metrics(
     while True:
         started = time.monotonic()
         router_task = fetch_metrics(executor, router_metrics_url, min(interval, 1.0))
-        worker_tasks = [fetch_metrics(executor, url, min(interval, 1.0)) for url in worker_metrics_urls]
-        router_samples, *worker_samples = await asyncio.gather(router_task, *worker_tasks)
+        worker_tasks = [
+            fetch_metrics(executor, url, min(interval, 1.0))
+            for url in worker_metrics_urls
+        ]
+        router_samples, *worker_samples = await asyncio.gather(
+            router_task, *worker_tasks
+        )
         if router_samples is not None:
             router_samples = [
-                sample for sample in router_samples if sample["name"] in ROUTER_SAMPLE_METRICS
+                sample
+                for sample in router_samples
+                if sample["name"] in ROUTER_SAMPLE_METRICS
             ]
         workers: list[dict[str, Any]] = []
         for index, samples in enumerate(worker_samples):
@@ -356,10 +391,8 @@ async def sample_metrics(
         if stop.is_set():
             return
         remaining = interval - (time.monotonic() - started)
-        try:
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=max(0.01, remaining))
-        except asyncio.TimeoutError:
-            pass
 
 
 async def issue_request(
@@ -377,12 +410,16 @@ async def issue_request(
         started = time.monotonic()
         try:
             loop = asyncio.get_running_loop()
-            status, response = await loop.run_in_executor(executor, post_json, endpoint, encoded, timeout)
+            status, response = await loop.run_in_executor(
+                executor, post_json, endpoint, encoded, timeout
+            )
             error = None
         except Exception as exc:
             status, response, error = 0, b"", f"{type(exc).__name__}: {exc}"
         latency = time.monotonic() - started
-    completion_tokens, prompt_tokens, nonempty, response_sha = response_summary(response)
+    completion_tokens, prompt_tokens, nonempty, response_sha = response_summary(
+        response
+    )
     return {
         "round": round_number,
         "request_id": item.request_id,
@@ -419,7 +456,10 @@ def counter_delta(
 
     before = collect(first)
     after = collect(last)
-    delta = {key: after.get(key, 0.0) - before.get(key, 0.0) for key in set(before) | set(after)}
+    delta = {
+        key: after.get(key, 0.0) - before.get(key, 0.0)
+        for key in set(before) | set(after)
+    }
     return delta if label_key else delta.get("all", 0.0)
 
 
@@ -446,7 +486,10 @@ def histogram_quantile_bound(
 
     before = buckets(first)
     after = buckets(last)
-    deltas = {bound: after.get(bound, 0.0) - before.get(bound, 0.0) for bound in set(before) | set(after)}
+    deltas = {
+        bound: after.get(bound, 0.0) - before.get(bound, 0.0)
+        for bound in set(before) | set(after)
+    }
     total = deltas.get(math.inf, 0.0)
     if total <= 0:
         return None
@@ -474,7 +517,9 @@ def histogram_quantile_by_label(
     }
     result: dict[str, float] = {}
     for label in labels:
-        before = [sample for sample in first if sample["labels"].get(label_key) == label]
+        before = [
+            sample for sample in first if sample["labels"].get(label_key) == label
+        ]
         after = [sample for sample in last if sample["labels"].get(label_key) == label]
         bound = histogram_quantile_bound(before, after, name, quantile)
         if bound is not None:
@@ -493,22 +538,38 @@ def worker_histogram_samples(sample: dict[str, Any], name: str) -> list[dict[str
     return selected
 
 
-def summarize_samples(samples: list[dict[str, Any]], max_num_seqs: int) -> dict[str, Any]:
-    usable = [sample for sample in samples if all(worker["available"] for worker in sample["workers"])]
+def summarize_samples(
+    samples: list[dict[str, Any]], max_num_seqs: int
+) -> dict[str, Any]:
+    usable = [
+        sample
+        for sample in samples
+        if all(worker["available"] for worker in sample["workers"])
+    ]
     idle_while_queued = 0
     queue_seconds = [0.0, 0.0, 0.0, 0.0]
     max_running = [0.0, 0.0, 0.0, 0.0]
     max_waiting = [0.0, 0.0, 0.0, 0.0]
     for index, sample in enumerate(usable):
-        running = [float(worker.get("vllm:num_requests_running") or 0.0) for worker in sample["workers"]]
-        waiting = [float(worker.get("vllm:num_requests_waiting") or 0.0) for worker in sample["workers"]]
+        running = [
+            float(worker.get("vllm:num_requests_running") or 0.0)
+            for worker in sample["workers"]
+        ]
+        waiting = [
+            float(worker.get("vllm:num_requests_waiting") or 0.0)
+            for worker in sample["workers"]
+        ]
         if any(value > 0 for value in waiting) and any(
             running[i] < max_num_seqs and waiting[i] == 0 for i in range(len(running))
         ):
             idle_while_queued += 1
         for worker_index in range(4):
-            max_running[worker_index] = max(max_running[worker_index], running[worker_index])
-            max_waiting[worker_index] = max(max_waiting[worker_index], waiting[worker_index])
+            max_running[worker_index] = max(
+                max_running[worker_index], running[worker_index]
+            )
+            max_waiting[worker_index] = max(
+                max_waiting[worker_index], waiting[worker_index]
+            )
             if index:
                 elapsed = sample["monotonic"] - usable[index - 1]["monotonic"]
                 queue_seconds[worker_index] += waiting[worker_index] * elapsed
@@ -653,11 +714,15 @@ async def run_round(
     await sampler
 
     latencies = [record["latency_seconds"] for record in results]
-    successes = [record for record in results if record["status"] == 200 and record["nonempty"]]
+    successes = [
+        record for record in results if record["status"] == 200 and record["nonempty"]
+    ]
     completion_tokens = sum(record["completion_tokens"] for record in successes)
     metrics_summary = summarize_samples(metric_samples, args.max_num_seqs)
     worker_success_deltas = metrics_summary["worker_request_success_deltas"]
-    backend_successes = sum(worker_success_deltas) if worker_success_deltas is not None else None
+    backend_successes = (
+        sum(worker_success_deltas) if worker_success_deltas is not None else None
+    )
     round_summary = {
         "round": round_number,
         "requests": len(results),
@@ -665,12 +730,15 @@ async def run_round(
         "failures": len(results) - len(successes),
         "makespan_seconds": makespan,
         "requests_per_second": len(successes) / makespan if makespan else None,
-        "completion_tokens_per_second": completion_tokens / makespan if makespan else None,
+        "completion_tokens_per_second": completion_tokens / makespan
+        if makespan
+        else None,
         "latency_p50_seconds": percentile(latencies, 0.50),
         "latency_p95_seconds": percentile(latencies, 0.95),
         "latency_p99_seconds": percentile(latencies, 0.99),
         "backend_request_count_matches": (
-            backend_successes is not None and abs(backend_successes - len(successes)) < 0.5
+            backend_successes is not None
+            and abs(backend_successes - len(successes)) < 0.5
         ),
         "backend_successes": backend_successes,
         "metrics": metrics_summary,
@@ -694,6 +762,9 @@ async def async_main(args: argparse.Namespace) -> int:
     request_path = output_dir / f"{args.arm}-requests.jsonl"
     metrics_path = output_dir / f"{args.arm}-metrics.jsonl"
     summary_path = output_dir / f"{args.arm}-summary.json"
+    warmup_request_path = output_dir / f"{args.arm}-warmup-requests.jsonl"
+    warmup_metrics_path = output_dir / f"{args.arm}-warmup-metrics.jsonl"
+    warmup_summary_path = output_dir / f"{args.arm}-warmup-summary.json"
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=max(16, args.concurrency + len(args.worker_metrics) + 8),
         thread_name_prefix="router-lab",
@@ -704,13 +775,33 @@ async def async_main(args: argparse.Namespace) -> int:
     try:
         if args.warmup > 0:
             warmup_items = items[: min(args.warmup, len(items))]
-            _warmup_results, _warmup_metrics, warmup_summary = await run_round(
+            warmup_results, warmup_metrics, warmup_summary = await run_round(
                 args, warmup_items, 0, executor
+            )
+            warmup_request_path.write_text(
+                "".join(
+                    json.dumps(record, sort_keys=True) + "\n"
+                    for record in warmup_results
+                ),
+                encoding="utf-8",
+            )
+            warmup_metrics_path.write_text(
+                "".join(
+                    json.dumps(record, sort_keys=True) + "\n"
+                    for record in warmup_metrics
+                ),
+                encoding="utf-8",
+            )
+            warmup_summary_path.write_text(
+                json.dumps(warmup_summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
             )
             if warmup_summary["failures"]:
                 raise RuntimeError(f"warmup failed: {warmup_summary}")
         for round_number in range(1, args.rounds + 1):
-            results, metrics, summary = await run_round(args, items, round_number, executor)
+            results, metrics, summary = await run_round(
+                args, items, round_number, executor
+            )
             all_results.extend(results)
             for sample in metrics:
                 sample["round"] = round_number
@@ -777,7 +868,10 @@ async def async_main(args: argparse.Namespace) -> int:
             [summary["metrics"]["router_rss_peak_bytes"] for summary in valid_rounds]
         ),
         "max_residual_router_local_inflight": max_present(
-            [summary["metrics"]["residual_router_local_inflight"] for summary in summaries]
+            [
+                summary["metrics"]["residual_router_local_inflight"]
+                for summary in summaries
+            ]
         ),
         "max_residual_worker_running": max_present(
             [summary["metrics"]["residual_worker_running"] for summary in summaries]
@@ -789,24 +883,43 @@ async def async_main(args: argparse.Namespace) -> int:
         "all_backend_request_count_matches": bool(summaries)
         and all(summary["backend_request_count_matches"] for summary in summaries),
     }
-    summary_path.write_text(json.dumps(arm_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(arm_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(json.dumps(arm_summary, indent=2, sort_keys=True))
     return 0 if arm_summary["total_failures"] == 0 else 1
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", required=True, help="Stable label used for output filenames")
-    parser.add_argument("--endpoint", required=True, help="Router API root, for example http://127.0.0.1:8003")
-    parser.add_argument("--router-metrics", required=True, help="Router Prometheus metrics URL")
-    parser.add_argument("--router-container", help="Router container name for CPU/RSS sampling")
-    parser.add_argument("--worker-metrics", action="append", required=True, help="Worker metrics URL; pass four times")
+    parser.add_argument(
+        "--arm", required=True, help="Stable label used for output filenames"
+    )
+    parser.add_argument(
+        "--endpoint",
+        required=True,
+        help="Router API root, for example http://127.0.0.1:8003",
+    )
+    parser.add_argument(
+        "--router-metrics", required=True, help="Router Prometheus metrics URL"
+    )
+    parser.add_argument(
+        "--router-container", help="Router container name for CPU/RSS sampling"
+    )
+    parser.add_argument(
+        "--worker-metrics",
+        action="append",
+        required=True,
+        help="Worker metrics URL; pass four times",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--model",
         help=f"Override replay model ID; fixed workloads default to {DEFAULT_MODEL}",
     )
-    parser.add_argument("--replay", type=Path, help="JSONL containing direct bodies or {id,class,body}")
+    parser.add_argument(
+        "--replay", type=Path, help="JSONL containing direct bodies or {id,class,body}"
+    )
     parser.add_argument("--requests", type=int, default=96)
     parser.add_argument(
         "--fixed-class",
@@ -827,7 +940,9 @@ def parse_args() -> argparse.Namespace:
     if args.replay and args.requests != 96:
         parser.error("--requests is not used with --replay")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.arm):
-        parser.error("--arm may contain only letters, digits, dot, underscore, and dash")
+        parser.error(
+            "--arm may contain only letters, digits, dot, underscore, and dash"
+        )
     args.router_pid = container_pid(args.router_container)
     return args
 

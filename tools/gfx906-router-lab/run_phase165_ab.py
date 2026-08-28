@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Run the Phase 165 side-by-side Router matrix during an approved window."""
 
 from __future__ import annotations
@@ -12,7 +15,6 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-
 
 OFFICIAL_IMAGE = (
     "vllm/vllm-router@sha256:"
@@ -62,7 +64,11 @@ def remove_container(name: str) -> None:
 
 
 def scan_worker_logs(since_epoch: float) -> dict[str, object]:
-    result: dict[str, object] = {"since_epoch": since_epoch, "workers": {}, "matches": 0}
+    result: dict[str, object] = {
+        "since_epoch": since_epoch,
+        "workers": {},
+        "matches": 0,
+    }
     for index in range(4):
         name = f"qwen35-9b-vllm-gpu{index}"
         completed = subprocess.run(
@@ -72,7 +78,11 @@ def scan_worker_logs(since_epoch: float) -> dict[str, object]:
             stderr=subprocess.STDOUT,
             check=False,
         )
-        matches = [line[-2000:] for line in completed.stdout.splitlines() if SAFETY_PATTERN.search(line)]
+        matches = [
+            line[-2000:]
+            for line in completed.stdout.splitlines()
+            if SAFETY_PATTERN.search(line)
+        ]
         result["workers"][name] = {
             "docker_logs_exit_code": completed.returncode,
             "matches": matches[:50],
@@ -107,11 +117,15 @@ def queue_depth(url: str) -> tuple[int, int]:
         text = response.read().decode("utf-8", errors="replace")
     running = sum(
         float(value)
-        for value in re.findall(r"^vllm:num_requests_running(?:\{[^}]*\})?\s+([0-9.eE+-]+)$", text, re.M)
+        for value in re.findall(
+            r"^vllm:num_requests_running(?:\{[^}]*\})?\s+([0-9.eE+-]+)$", text, re.M
+        )
     )
     waiting = sum(
         float(value)
-        for value in re.findall(r"^vllm:num_requests_waiting(?:\{[^}]*\})?\s+([0-9.eE+-]+)$", text, re.M)
+        for value in re.findall(
+            r"^vllm:num_requests_waiting(?:\{[^}]*\})?\s+([0-9.eE+-]+)$", text, re.M
+        )
     )
     return int(running), int(waiting)
 
@@ -134,12 +148,16 @@ def validate_replay(path: Path, expected_requests: int) -> dict[str, object]:
     payload_bytes = 0
     max_tokens: list[int] = []
     records = 0
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             continue
         record = json.loads(line)
         if "payload_relpath" not in record or "payload_sha256" not in record:
-            raise ValueError(f"{path}:{line_number}: exact payload reference and SHA are required")
+            raise ValueError(
+                f"{path}:{line_number}: exact payload reference and SHA are required"
+            )
         payload_path = (replay_root / str(record["payload_relpath"])).resolve()
         if not payload_path.is_relative_to(replay_root):
             raise ValueError(f"{path}:{line_number}: payload path escapes replay root")
@@ -154,7 +172,9 @@ def validate_replay(path: Path, expected_requests: int) -> dict[str, object]:
             raise ValueError(f"{path}:{line_number}: streaming replay is not supported")
         request_index = int(record.get("request_index", line_number))
         if request_index in request_indices:
-            raise ValueError(f"{path}:{line_number}: duplicate request_index {request_index}")
+            raise ValueError(
+                f"{path}:{line_number}: duplicate request_index {request_index}"
+            )
         request_indices.add(request_index)
         stage = str(record.get("stage", "unknown"))
         stage_counts[stage] = stage_counts.get(stage, 0) + 1
@@ -163,7 +183,9 @@ def validate_replay(path: Path, expected_requests: int) -> dict[str, object]:
         payload_bytes += len(payload)
         records += 1
     if records != expected_requests:
-        raise ValueError(f"expected {expected_requests} replay requests, found {records}")
+        raise ValueError(
+            f"expected {expected_requests} replay requests, found {records}"
+        )
     return {
         "requests": records,
         "payload_bytes": payload_bytes,
@@ -193,7 +215,12 @@ def start_router(
             "least-inflight": "least_inflight",
             "queue-aware": "queue_aware",
         }[arm]
-        name, image, api_port, metrics_port = CANDIDATE_CONTAINER, patched_image, 8003, 29001
+        name, image, api_port, metrics_port = (
+            CANDIDATE_CONTAINER,
+            patched_image,
+            8003,
+            29001,
+        )
     run([str(helper), name, image, policy, str(api_port), str(metrics_port)])
     return (
         f"http://127.0.0.1:{api_port}",
@@ -273,7 +300,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--maintenance-ready",
         action="store_true",
-        help="Assert Phase1 is paused, fallback owns 8002, and worker queues are draining",
+        help=(
+            "Assert Phase1 is paused, fallback owns 8002, and worker queues "
+            "are draining"
+        ),
     )
     return parser.parse_args()
 
@@ -289,7 +319,9 @@ def main() -> int:
     if not args.maintenance_ready:
         raise SystemExit("refusing to run without --maintenance-ready")
     if container_running(PRODUCTION_ROUTER):
-        raise SystemExit(f"refusing while production Router {PRODUCTION_ROUTER} is running")
+        raise SystemExit(
+            f"refusing while production Router {PRODUCTION_ROUTER} is running"
+        )
 
     script_dir = Path(__file__).resolve().parent
     helper = script_dir / "run-router.sh"
@@ -298,7 +330,13 @@ def main() -> int:
     workers = worker_metric_urls()
     wait_drained(workers, args.drain_timeout)
     scenarios = tuple(
-        (f"{fixed_class}-c{concurrency}", concurrency, None, args.fixed_requests_per_class, fixed_class)
+        (
+            f"{fixed_class}-c{concurrency}",
+            concurrency,
+            None,
+            args.fixed_requests_per_class,
+            fixed_class,
+        )
         for concurrency in (16, 32)
         for fixed_class in ("text", "image1", "image2")
     ) + (("phase1-c32", 32, args.replay, 0, None),)
@@ -351,7 +389,8 @@ def main() -> int:
                     wait_drained(workers, args.drain_timeout)
                     safety = scan_worker_logs(started)
                     (args.output_dir / f"{label}-safety.json").write_text(
-                        json.dumps(safety, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                        json.dumps(safety, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
                     )
                     manifest["runs"].append(
                         {
@@ -363,7 +402,8 @@ def main() -> int:
                         }
                     )
                     (args.output_dir / "manifest.json").write_text(
-                        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
                     )
                     if safety["matches"]:
                         raise RuntimeError(f"worker safety log gate failed for {label}")

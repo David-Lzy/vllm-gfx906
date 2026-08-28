@@ -30,8 +30,9 @@ measured directly.
 ```
 
 The default image is local-only:
-`local/vllm-router:0.1.14-queue-aware-phase165`. A Phase 166 production canary
-must use a separate fixed GHCR tag and digest after the Phase 165 gates pass.
+`local/vllm-router:0.1.14-queue-aware-phase165`. Phase 165 did not pass its
+performance and replay gates, so that image was deleted and Phase 166 was not
+created. Rebuilding it is for evidence reproduction only, not production use.
 
 ## CPU-only contract test
 
@@ -102,6 +103,7 @@ aggregates all three rounds and evaluates the Phase 166 promotion gates.
 
 ## Production boundary
 
-Phase 165 is a side-by-side evaluation. It must not edit the production
-Compose file or replace port 8002. The current worker model, model ID, worker
-arguments, and OpenAI request/response formats remain unchanged.
+Phase 165 was a side-by-side evaluation and is now archived as rejected. It did
+not edit the production Compose file or replace port 8002. The current worker
+model, model ID, worker arguments, and OpenAI request/response formats remain
+unchanged.
