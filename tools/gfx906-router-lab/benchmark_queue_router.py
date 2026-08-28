@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import struct
 import subprocess
@@ -25,8 +26,6 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import regex as re
 
 SAMPLE_METRICS = {
     "vllm:num_requests_running",
@@ -57,6 +56,21 @@ ROUTER_SAMPLE_METRICS = {
     "vllm_router_worker_observed_waiting",
     "vllm_router_worker_effective_depth",
     "vllm_router_worker_telemetry_age_seconds",
+    "vllm_router_admission_queue_depth",
+    "vllm_router_admission_queue_depth_total",
+    "vllm_router_admission_queue_bytes",
+    "vllm_router_admission_queue_bytes_total",
+    "vllm_router_admission_oldest_wait_seconds",
+    "vllm_router_admission_wait_seconds_bucket",
+    "vllm_router_admission_wait_seconds_sum",
+    "vllm_router_admission_wait_seconds_count",
+    "vllm_router_admission_worker_slots_used",
+    "vllm_router_admission_dispatch_total",
+    "vllm_router_admission_cancellations_total",
+    "vllm_router_admission_timeouts_total",
+    "vllm_router_admission_rejections_total",
+    "vllm_router_admission_retries_total",
+    "vllm_router_admission_invariant_violations_total",
 }
 
 DEFAULT_MODEL = "cyankiwi/Qwen3.5-9B-AWQ-4bit"
@@ -549,6 +563,11 @@ def summarize_samples(
         if all(worker["available"] for worker in sample["workers"])
     ]
     idle_while_queued = 0
+    admission_backlog_with_unused_slot = 0
+    admission_observed_samples = 0
+    admission_queue_peak = 0.0
+    admission_queue_bytes_peak = 0.0
+    admission_oldest_wait_peak = 0.0
     queue_seconds = [0.0, 0.0, 0.0, 0.0]
     max_running = [0.0, 0.0, 0.0, 0.0]
     max_waiting = [0.0, 0.0, 0.0, 0.0]
@@ -565,6 +584,30 @@ def summarize_samples(
             running[i] < max_num_seqs and waiting[i] == 0 for i in range(len(running))
         ):
             idle_while_queued += 1
+        router_metrics = sample.get("router") or []
+        admission_depth = metric_value(
+            router_metrics, "vllm_router_admission_queue_depth_total"
+        )
+        admission_slots = metric_value(
+            router_metrics, "vllm_router_admission_worker_slots_used"
+        )
+        if admission_depth is not None and admission_slots is not None:
+            admission_observed_samples += 1
+            if admission_depth > 0 and admission_slots < max_num_seqs * len(running):
+                admission_backlog_with_unused_slot += 1
+            admission_queue_peak = max(admission_queue_peak, admission_depth)
+            admission_queue_bytes_peak = max(
+                admission_queue_bytes_peak,
+                metric_value(router_metrics, "vllm_router_admission_queue_bytes_total")
+                or 0.0,
+            )
+            admission_oldest_wait_peak = max(
+                admission_oldest_wait_peak,
+                metric_value(
+                    router_metrics, "vllm_router_admission_oldest_wait_seconds"
+                )
+                or 0.0,
+            )
         for worker_index in range(4):
             max_running[worker_index] = max(
                 max_running[worker_index], running[worker_index]
@@ -617,6 +660,24 @@ def summarize_samples(
         "usable_samples": len(usable),
         "idle_while_queued_samples": idle_while_queued,
         "idle_while_queued_ratio": idle_while_queued / len(usable) if usable else None,
+        "admission_observed_samples": admission_observed_samples,
+        "admission_backlog_with_unused_slot_samples": (
+            admission_backlog_with_unused_slot
+        ),
+        "admission_backlog_with_unused_slot_ratio": (
+            admission_backlog_with_unused_slot / admission_observed_samples
+            if admission_observed_samples
+            else None
+        ),
+        "admission_queue_peak": admission_queue_peak
+        if admission_observed_samples
+        else None,
+        "admission_queue_bytes_peak": (
+            admission_queue_bytes_peak if admission_observed_samples else None
+        ),
+        "admission_oldest_wait_peak_seconds": (
+            admission_oldest_wait_peak if admission_observed_samples else None
+        ),
         "queue_seconds": queue_seconds,
         "max_running": max_running,
         "max_waiting": max_waiting,
@@ -631,6 +692,24 @@ def summarize_samples(
         ),
         "residual_router_local_inflight": metric_value(
             router_last or [], "vllm_router_worker_local_inflight"
+        ),
+        "residual_admission_slots": metric_value(
+            router_last or [], "vllm_router_admission_worker_slots_used"
+        ),
+        "residual_admission_queue": metric_value(
+            router_last or [], "vllm_router_admission_queue_depth_total"
+        ),
+        "admission_invariant_violations": counter_delta(
+            router_first,
+            router_last,
+            "vllm_router_admission_invariant_violations_total",
+            "violation",
+        ),
+        "admission_rejections": counter_delta(
+            router_first,
+            router_last,
+            "vllm_router_admission_rejections_total",
+            "reason",
         ),
         "residual_worker_running": (
             sum(
@@ -845,6 +924,24 @@ async def async_main(args: argparse.Namespace) -> int:
         "median_idle_while_queued_ratio": median_present(
             [summary["metrics"]["idle_while_queued_ratio"] for summary in valid_rounds]
         ),
+        "median_worker_queue_seconds_total": median_present(
+            [sum(summary["metrics"]["queue_seconds"]) for summary in valid_rounds]
+        ),
+        "median_admission_backlog_with_unused_slot_ratio": median_present(
+            [
+                summary["metrics"]["admission_backlog_with_unused_slot_ratio"]
+                for summary in valid_rounds
+            ]
+        ),
+        "max_admission_queue_peak": max_present(
+            [summary["metrics"]["admission_queue_peak"] for summary in valid_rounds]
+        ),
+        "max_admission_oldest_wait_peak_seconds": max_present(
+            [
+                summary["metrics"]["admission_oldest_wait_peak_seconds"]
+                for summary in valid_rounds
+            ]
+        ),
         "median_router_dispatch_p99_bound_seconds": median_present(
             [
                 summary["metrics"]["router_dispatch_p99_bound_seconds"]
@@ -873,6 +970,23 @@ async def async_main(args: argparse.Namespace) -> int:
             [
                 summary["metrics"]["residual_router_local_inflight"]
                 for summary in summaries
+            ]
+        ),
+        "max_residual_admission_slots": max_present(
+            [summary["metrics"]["residual_admission_slots"] for summary in summaries]
+        ),
+        "max_residual_admission_queue": max_present(
+            [summary["metrics"]["residual_admission_queue"] for summary in summaries]
+        ),
+        "max_admission_invariant_violations": max_present(
+            [
+                sum(
+                    (
+                        summary["metrics"]["admission_invariant_violations"] or {}
+                    ).values()
+                )
+                for summary in summaries
+                if summary["metrics"]["admission_invariant_violations"] is not None
             ]
         ),
         "max_residual_worker_running": max_present(
@@ -929,7 +1043,9 @@ def parse_args() -> argparse.Namespace:
         default="mixed",
         help="Homogeneous fixed workload class; ignored for replay input",
     )
-    parser.add_argument("--concurrency", type=int, choices=(16, 32), required=True)
+    parser.add_argument(
+        "--concurrency", type=int, choices=(16, 32, 40, 64), required=True
+    )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--max-num-seqs", type=int, default=8)
     parser.add_argument("--rounds", type=int, default=3)

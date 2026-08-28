@@ -1,0 +1,2724 @@
+From e814d6f91e0d66e06b1675e4b0e4c61514e0a04c Mon Sep 17 00:00:00 2001
+From: David-Lzy <li19931020li@gmail.com>
+Date: Sat, 29 Aug 2026 05:09:52 +0930
+Subject: [PATCH] feat: add global FIFO admission routing
+
+Add strict per-model FIFO admission, synchronous worker-slot leases, retry re-admission, queue limits, lifecycle-safe streaming release, and production-shaped observability.
+
+Assisted-by: OpenAI Codex
+
+Signed-off-by: David-Lzy <li19931020li@gmail.com>
+---
+ Dockerfile.router           |    4 +-
+ src/admission.rs            | 1053 +++++++++++++++++++++++++++++++++++
+ src/config/types.rs         |   54 ++
+ src/config/validation.rs    |  110 ++++
+ src/core/worker.rs          |   22 -
+ src/core/worker_registry.rs |   13 -
+ src/lib.rs                  |    8 +
+ src/main.rs                 |   24 +-
+ src/metrics.rs              |  172 ++++++
+ src/middleware.rs           |   25 +-
+ src/policies/factory.rs     |    6 +-
+ src/policies/global_fifo.rs |   51 ++
+ src/policies/mod.rs         |    2 +
+ src/policies/registry.rs    |    6 +-
+ src/routers/http/router.rs  |  696 +++++++++++++++--------
+ 15 files changed, 1956 insertions(+), 290 deletions(-)
+ create mode 100644 src/admission.rs
+ create mode 100644 src/policies/global_fifo.rs
+
+diff --git a/Dockerfile.router b/Dockerfile.router
+index 4143795..5548691 100644
+--- a/Dockerfile.router
++++ b/Dockerfile.router
+@@ -1,5 +1,5 @@
+ # Dockerfile for vllm-router
+-FROM rustlang/rust:nightly-bullseye as rust-builder
++FROM rustlang/rust@sha256:030bd4821034f9d982410a24abc5cad7bd0b4c8879a2a4176564302cbfe6219f AS rust-builder
+ 
+ # Install system dependencies
+ RUN apt-get update && apt-get install -y \
+@@ -19,7 +19,7 @@ COPY src ./src
+ RUN cargo build --release
+ 
+ # Python stage with Rust binary
+-FROM python:3.12-slim-bullseye
++FROM python@sha256:411fa4dcfdce7e7a3057c45662beba9dcd4fa36b2e50a2bfcd6c9333e59bf0db
+ 
+ # Install system dependencies
+ RUN apt-get update && apt upgrade -y && apt-get install -y \
+diff --git a/src/admission.rs b/src/admission.rs
+new file mode 100644
+index 0000000..9fc810c
+--- /dev/null
++++ b/src/admission.rs
+@@ -0,0 +1,1053 @@
++//! Strict FIFO admission control for fixed-capacity worker pools.
++
++use crate::core::{Worker, WorkerRegistry};
++use crate::metrics::RouterMetrics;
++use std::collections::{HashMap, VecDeque};
++use std::fmt;
++use std::sync::{Arc, Mutex, Weak};
++use std::time::{Duration, Instant};
++use tokio::sync::oneshot;
++
++pub const DEFAULT_MODEL_KEY: &str = "__default__";
++
++#[derive(Debug, Clone, Copy)]
++pub struct GlobalFifoConfig {
++    pub worker_capacity: usize,
++    pub max_waiting: usize,
++    pub max_queued_bytes: usize,
++    pub queue_timeout: Duration,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum AdmissionError {
++    QueueFull,
++    QueueBytesFull,
++    QueueTimeout,
++    RequestSerialization(String),
++    DispatcherClosed,
++}
++
++impl fmt::Display for AdmissionError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::QueueFull => write!(f, "router admission queue is full"),
++            Self::QueueBytesFull => write!(f, "router admission byte limit is full"),
++            Self::QueueTimeout => write!(f, "request timed out in the router admission queue"),
++            Self::RequestSerialization(error) => {
++                write!(f, "failed to size queued request: {error}")
++            }
++            Self::DispatcherClosed => write!(f, "router admission dispatcher closed"),
++        }
++    }
++}
++
++pub struct AdmissionAssignment {
++    pub worker: Arc<dyn Worker>,
++    pub lease: AdmissionLease,
++    pub ticket_id: u64,
++    pub waited: Duration,
++}
++
++impl fmt::Debug for AdmissionAssignment {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("AdmissionAssignment")
++            .field("worker", &self.worker.url())
++            .field("ticket_id", &self.ticket_id)
++            .field("waited", &self.waited)
++            .finish_non_exhaustive()
++    }
++}
++
++pub struct AdmissionLease {
++    inner: Weak<AdmissionInner>,
++    worker: Arc<dyn Worker>,
++    model: String,
++    route: String,
++    started_at: Instant,
++    active: bool,
++}
++
++impl fmt::Debug for AdmissionLease {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("AdmissionLease")
++            .field("worker", &self.worker.url())
++            .field("model", &self.model)
++            .field("route", &self.route)
++            .field("active", &self.active)
++            .finish()
++    }
++}
++
++impl Drop for AdmissionLease {
++    fn drop(&mut self) {
++        if !self.active {
++            return;
++        }
++        self.active = false;
++        if let Some(inner) = self.inner.upgrade() {
++            inner.release(
++                &self.model,
++                self.worker.clone(),
++                &self.route,
++                self.started_at,
++            );
++        }
++    }
++}
++
++struct Waiter {
++    ticket_id: u64,
++    enqueued_at: Instant,
++    body_bytes: usize,
++    route: String,
++    excluded_worker: Option<String>,
++    tx: oneshot::Sender<Result<AdmissionAssignment, AdmissionError>>,
++}
++
++#[derive(Default)]
++struct ModelQueue {
++    waiters: VecDeque<Waiter>,
++    rr_cursor: usize,
++}
++
++#[derive(Default)]
++struct AdmissionState {
++    active_by_worker: HashMap<String, usize>,
++    queues: HashMap<String, ModelQueue>,
++    model_order: Vec<String>,
++    model_cursor: usize,
++    next_ticket: u64,
++    queued_count: usize,
++    queued_bytes: usize,
++}
++
++struct Delivery {
++    tx: oneshot::Sender<Result<AdmissionAssignment, AdmissionError>>,
++    result: Result<AdmissionAssignment, AdmissionError>,
++}
++
++struct AdmissionInner {
++    config: GlobalFifoConfig,
++    worker_registry: Arc<WorkerRegistry>,
++    state: Mutex<AdmissionState>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AdmissionSnapshot {
++    pub active_by_worker: HashMap<String, usize>,
++    pub queued_by_model: HashMap<String, usize>,
++    pub queued_count: usize,
++    pub queued_bytes: usize,
++}
++
++#[derive(Clone)]
++pub struct GlobalFifoAdmission {
++    inner: Arc<AdmissionInner>,
++}
++
++impl fmt::Debug for GlobalFifoAdmission {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("GlobalFifoAdmission")
++            .field("config", &self.inner.config)
++            .finish_non_exhaustive()
++    }
++}
++
++impl GlobalFifoAdmission {
++    pub fn new(config: GlobalFifoConfig, worker_registry: Arc<WorkerRegistry>) -> Self {
++        assert!(
++            config.worker_capacity > 0,
++            "worker capacity must be positive"
++        );
++        assert!(config.max_waiting > 0, "queue size must be positive");
++        assert!(
++            config.max_queued_bytes > 0,
++            "queue byte limit must be positive"
++        );
++        assert!(
++            !config.queue_timeout.is_zero(),
++            "queue timeout must be positive"
++        );
++
++        // Static workers begin healthy, but the upstream health gauge is only
++        // updated on a transition. Seed every worker here so admission and
++        // health observability are complete from the first scrape.
++        for worker in worker_registry.get_all() {
++            RouterMetrics::set_worker_health(worker.url(), worker.is_available());
++            RouterMetrics::set_admission_worker_slots(worker.url(), 0);
++        }
++
++        Self {
++            inner: Arc::new(AdmissionInner {
++                config,
++                worker_registry,
++                state: Mutex::new(AdmissionState::default()),
++            }),
++        }
++    }
++
++    /// Periodically wakes queues after worker health recovery and keeps age
++    /// gauges current. Worker metrics are never used as scheduling input.
++    pub fn start_housekeeping(&self) {
++        let inner = Arc::downgrade(&self.inner);
++        tokio::spawn(async move {
++            let mut interval = tokio::time::interval(Duration::from_millis(250));
++            loop {
++                interval.tick().await;
++                let Some(inner) = inner.upgrade() else {
++                    break;
++                };
++                inner.expire_waiters();
++                inner.drive();
++                inner.refresh_metrics();
++            }
++        });
++    }
++
++    pub async fn acquire<T: serde::Serialize>(
++        &self,
++        model: &str,
++        route: &str,
++        content_length: Option<usize>,
++        request: &T,
++        excluded_worker: Option<&str>,
++    ) -> Result<AdmissionAssignment, AdmissionError> {
++        let model = normalize_model(model);
++
++        if let Some(assignment) = self
++            .inner
++            .try_acquire_immediate(&model, route, excluded_worker)
++        {
++            return Ok(assignment);
++        }
++
++        // Avoid a second JSON serialization on the normal fast path. Only a
++        // request that must wait and lacks Content-Length pays this cost.
++        let body_bytes = match content_length {
++            Some(size) => size,
++            None => serde_json::to_vec(request)
++                .map_err(|error| AdmissionError::RequestSerialization(error.to_string()))?
++                .len(),
++        };
++
++        self.inner
++            .enqueue_and_wait(&model, route, body_bytes, excluded_worker)
++            .await
++    }
++
++    pub fn snapshot(&self) -> AdmissionSnapshot {
++        self.inner.snapshot()
++    }
++}
++
++fn normalize_model(model: &str) -> String {
++    if model.trim().is_empty() || model == "unknown" {
++        DEFAULT_MODEL_KEY.to_string()
++    } else {
++        model.to_string()
++    }
++}
++
++impl AdmissionInner {
++    fn try_acquire_immediate(
++        self: &Arc<Self>,
++        model: &str,
++        route: &str,
++        excluded_worker: Option<&str>,
++    ) -> Option<AdmissionAssignment> {
++        let dispatch_started = Instant::now();
++        let mut state = self.state.lock().expect("admission state poisoned");
++        let queue_has_waiters = state
++            .queues
++            .get(model)
++            .is_some_and(|queue| !queue.waiters.is_empty());
++        if queue_has_waiters {
++            return None;
++        }
++
++        let worker = self.select_worker_locked(&mut state, model, excluded_worker)?;
++        let ticket_id = Self::next_ticket_locked(&mut state);
++        let assignment =
++            self.reserve_locked(&mut state, model, route, ticket_id, Duration::ZERO, worker);
++        self.update_metrics_locked(&state);
++        RouterMetrics::record_dispatch_duration("global_fifo", dispatch_started.elapsed());
++        Some(assignment)
++    }
++
++    async fn enqueue_and_wait(
++        self: &Arc<Self>,
++        model: &str,
++        route: &str,
++        body_bytes: usize,
++        excluded_worker: Option<&str>,
++    ) -> Result<AdmissionAssignment, AdmissionError> {
++        let (tx, mut rx) = oneshot::channel();
++        let ticket_id;
++        {
++            let mut state = self.state.lock().expect("admission state poisoned");
++            if state.queued_count >= self.config.max_waiting {
++                RouterMetrics::record_admission_rejection(model, "request_limit");
++                return Err(AdmissionError::QueueFull);
++            }
++            if state
++                .queued_bytes
++                .checked_add(body_bytes)
++                .is_none_or(|total| total > self.config.max_queued_bytes)
++            {
++                RouterMetrics::record_admission_rejection(model, "byte_limit");
++                return Err(AdmissionError::QueueBytesFull);
++            }
++
++            ticket_id = Self::next_ticket_locked(&mut state);
++            if !state.queues.contains_key(model) {
++                state.model_order.push(model.to_string());
++            }
++            state
++                .queues
++                .entry(model.to_string())
++                .or_default()
++                .waiters
++                .push_back(Waiter {
++                    ticket_id,
++                    enqueued_at: Instant::now(),
++                    body_bytes,
++                    route: route.to_string(),
++                    excluded_worker: excluded_worker.map(ToOwned::to_owned),
++                    tx,
++                });
++            state.queued_count += 1;
++            state.queued_bytes += body_bytes;
++            self.update_metrics_locked(&state);
++        }
++
++        let mut cancellation = QueueCancellation {
++            inner: Arc::downgrade(self),
++            model: model.to_string(),
++            ticket_id,
++            active: true,
++        };
++
++        self.drive();
++
++        let result = match tokio::time::timeout(self.config.queue_timeout, &mut rx).await {
++            Ok(Ok(result)) => result,
++            Ok(Err(_)) => Err(AdmissionError::DispatcherClosed),
++            Err(_) => {
++                RouterMetrics::record_admission_timeout(model);
++                Err(AdmissionError::QueueTimeout)
++            }
++        };
++        cancellation.active = false;
++        if matches!(result, Err(AdmissionError::QueueTimeout)) {
++            self.cancel_waiter(model, ticket_id, "timeout");
++        }
++        result
++    }
++
++    fn next_ticket_locked(state: &mut AdmissionState) -> u64 {
++        let ticket = state.next_ticket;
++        state.next_ticket = state.next_ticket.wrapping_add(1);
++        ticket
++    }
++
++    fn workers_for_model(&self, model: &str) -> Vec<Arc<dyn Worker>> {
++        if model != DEFAULT_MODEL_KEY {
++            let model_workers = self.worker_registry.get_by_model_fast(model);
++            if !model_workers.is_empty() {
++                return model_workers;
++            }
++        }
++
++        let all = self.worker_registry.get_all();
++        if model == DEFAULT_MODEL_KEY || all.iter().all(|worker| worker.model_id() == "unknown") {
++            all
++        } else {
++            Vec::new()
++        }
++    }
++
++    fn select_worker_locked(
++        &self,
++        state: &mut AdmissionState,
++        model: &str,
++        excluded_worker: Option<&str>,
++    ) -> Option<Arc<dyn Worker>> {
++        let mut eligible: Vec<Arc<dyn Worker>> = self
++            .workers_for_model(model)
++            .into_iter()
++            .filter(|worker| worker.is_available())
++            .filter(|worker| {
++                state
++                    .active_by_worker
++                    .get(worker.url())
++                    .copied()
++                    .unwrap_or(0)
++                    < self.config.worker_capacity
++            })
++            .collect();
++
++        if eligible.is_empty() {
++            return None;
++        }
++
++        if let Some(excluded) = excluded_worker {
++            if eligible.iter().any(|worker| worker.url() != excluded) {
++                eligible.retain(|worker| worker.url() != excluded);
++            }
++        }
++
++        let minimum = eligible
++            .iter()
++            .map(|worker| {
++                state
++                    .active_by_worker
++                    .get(worker.url())
++                    .copied()
++                    .unwrap_or(0)
++            })
++            .min()?;
++        eligible.retain(|worker| {
++            state
++                .active_by_worker
++                .get(worker.url())
++                .copied()
++                .unwrap_or(0)
++                == minimum
++        });
++        eligible.sort_by(|left, right| left.url().cmp(right.url()));
++
++        if !state.queues.contains_key(model) {
++            state.model_order.push(model.to_string());
++        }
++        let queue = state.queues.entry(model.to_string()).or_default();
++        let index = queue.rr_cursor % eligible.len();
++        queue.rr_cursor = queue.rr_cursor.wrapping_add(1);
++        Some(eligible[index].clone())
++    }
++
++    fn reserve_locked(
++        self: &Arc<Self>,
++        state: &mut AdmissionState,
++        model: &str,
++        route: &str,
++        ticket_id: u64,
++        waited: Duration,
++        worker: Arc<dyn Worker>,
++    ) -> AdmissionAssignment {
++        let active = state
++            .active_by_worker
++            .entry(worker.url().to_string())
++            .or_insert(0);
++        *active += 1;
++        if *active > self.config.worker_capacity {
++            RouterMetrics::record_admission_invariant_violation("worker_capacity");
++        }
++
++        worker.increment_load();
++        RouterMetrics::set_running_requests(worker.url(), worker.load());
++        RouterMetrics::set_admission_worker_slots(worker.url(), *active);
++        RouterMetrics::record_admission_dispatch(model, worker.url());
++        RouterMetrics::record_processed_request(worker.url());
++        RouterMetrics::record_policy_decision("global_fifo", worker.url());
++        RouterMetrics::record_admission_wait(model, waited);
++
++        AdmissionAssignment {
++            worker: worker.clone(),
++            lease: AdmissionLease {
++                inner: Arc::downgrade(self),
++                worker,
++                model: model.to_string(),
++                route: route.to_string(),
++                started_at: Instant::now(),
++                active: true,
++            },
++            ticket_id,
++            waited,
++        }
++    }
++
++    fn drive(self: &Arc<Self>) {
++        loop {
++            let deliveries = {
++                let mut state = self.state.lock().expect("admission state poisoned");
++                let deliveries = self.plan_dispatches_locked(&mut state);
++                self.update_metrics_locked(&state);
++                deliveries
++            };
++
++            if deliveries.is_empty() {
++                break;
++            }
++
++            for delivery in deliveries {
++                if let Err(result) = delivery.tx.send(delivery.result) {
++                    // Dropping a successfully reserved assignment releases its
++                    // lease and wakes the next FIFO waiter.
++                    drop(result);
++                }
++            }
++        }
++    }
++
++    fn plan_dispatches_locked(self: &Arc<Self>, state: &mut AdmissionState) -> Vec<Delivery> {
++        let mut deliveries = Vec::new();
++
++        loop {
++            if state.model_order.is_empty() {
++                break;
++            }
++            let order_len = state.model_order.len();
++            let mut progressed = false;
++
++            for offset in 0..order_len {
++                let index = (state.model_cursor + offset) % order_len;
++                let model = state.model_order[index].clone();
++
++                while state
++                    .queues
++                    .get(&model)
++                    .and_then(|queue| queue.waiters.front())
++                    .is_some_and(|waiter| waiter.tx.is_closed())
++                {
++                    if let Some(waiter) = self.pop_front_locked(state, &model) {
++                        RouterMetrics::record_admission_cancellation(&model, "receiver_closed");
++                        drop(waiter);
++                        progressed = true;
++                    }
++                }
++
++                let Some((excluded, route, ticket_id, enqueued_at)) = state
++                    .queues
++                    .get(&model)
++                    .and_then(|queue| queue.waiters.front())
++                    .map(|waiter| {
++                        (
++                            waiter.excluded_worker.clone(),
++                            waiter.route.clone(),
++                            waiter.ticket_id,
++                            waiter.enqueued_at,
++                        )
++                    })
++                else {
++                    continue;
++                };
++
++                let dispatch_started = Instant::now();
++                let Some(worker) = self.select_worker_locked(state, &model, excluded.as_deref())
++                else {
++                    continue;
++                };
++
++                let waiter = self
++                    .pop_front_locked(state, &model)
++                    .expect("FIFO front disappeared while dispatching");
++                let waited = enqueued_at.elapsed();
++                let assignment =
++                    self.reserve_locked(state, &model, &route, ticket_id, waited, worker);
++                RouterMetrics::record_dispatch_duration("global_fifo", dispatch_started.elapsed());
++                deliveries.push(Delivery {
++                    tx: waiter.tx,
++                    result: Ok(assignment),
++                });
++                state.model_cursor = (index + 1) % order_len;
++                progressed = true;
++            }
++
++            if !progressed {
++                break;
++            }
++        }
++
++        deliveries
++    }
++
++    fn pop_front_locked(&self, state: &mut AdmissionState, model: &str) -> Option<Waiter> {
++        let waiter = state.queues.get_mut(model)?.waiters.pop_front()?;
++        state.queued_count = state.queued_count.saturating_sub(1);
++        state.queued_bytes = state.queued_bytes.saturating_sub(waiter.body_bytes);
++        Some(waiter)
++    }
++
++    fn release(
++        self: &Arc<Self>,
++        _model: &str,
++        worker: Arc<dyn Worker>,
++        route: &str,
++        started_at: Instant,
++    ) {
++        {
++            let mut state = self.state.lock().expect("admission state poisoned");
++            let active = state
++                .active_by_worker
++                .entry(worker.url().to_string())
++                .or_insert(0);
++            if *active == 0 {
++                RouterMetrics::record_admission_invariant_violation("double_release");
++            } else {
++                *active -= 1;
++            }
++            worker.decrement_load();
++            RouterMetrics::set_running_requests(worker.url(), worker.load());
++            RouterMetrics::set_admission_worker_slots(worker.url(), *active);
++            RouterMetrics::record_worker_request_duration(
++                worker.url(),
++                route,
++                started_at.elapsed(),
++            );
++            self.update_metrics_locked(&state);
++        }
++        self.drive();
++    }
++
++    fn cancel_waiter(self: &Arc<Self>, model: &str, ticket_id: u64, reason: &str) {
++        let removed = {
++            let mut state = self.state.lock().expect("admission state poisoned");
++            let position = state.queues.get(model).and_then(|queue| {
++                queue
++                    .waiters
++                    .iter()
++                    .position(|waiter| waiter.ticket_id == ticket_id)
++            });
++            let removed = position.and_then(|position| {
++                let waiter = state
++                    .queues
++                    .get_mut(model)
++                    .and_then(|queue| queue.waiters.remove(position));
++                if let Some(waiter) = &waiter {
++                    state.queued_count = state.queued_count.saturating_sub(1);
++                    state.queued_bytes = state.queued_bytes.saturating_sub(waiter.body_bytes);
++                }
++                waiter
++            });
++            self.update_metrics_locked(&state);
++            removed
++        };
++        if removed.is_some() {
++            RouterMetrics::record_admission_cancellation(model, reason);
++            self.drive();
++        }
++    }
++
++    fn expire_waiters(self: &Arc<Self>) {
++        let mut deliveries = Vec::new();
++        {
++            let mut state = self.state.lock().expect("admission state poisoned");
++            let models = state.model_order.clone();
++            for model in models {
++                loop {
++                    let expired = state
++                        .queues
++                        .get(&model)
++                        .and_then(|queue| queue.waiters.front())
++                        .is_some_and(|waiter| {
++                            waiter.enqueued_at.elapsed() >= self.config.queue_timeout
++                        });
++                    if !expired {
++                        break;
++                    }
++                    if let Some(waiter) = self.pop_front_locked(&mut state, &model) {
++                        RouterMetrics::record_admission_timeout(&model);
++                        deliveries.push(Delivery {
++                            tx: waiter.tx,
++                            result: Err(AdmissionError::QueueTimeout),
++                        });
++                    }
++                }
++            }
++            self.update_metrics_locked(&state);
++        }
++        for delivery in deliveries {
++            let _ = delivery.tx.send(delivery.result);
++        }
++    }
++
++    fn refresh_metrics(&self) {
++        let state = self.state.lock().expect("admission state poisoned");
++        self.update_metrics_locked(&state);
++    }
++
++    fn update_metrics_locked(&self, state: &AdmissionState) {
++        RouterMetrics::set_admission_queue_depth_total(state.queued_count);
++        RouterMetrics::set_admission_queue_bytes_total(state.queued_bytes);
++        for model in &state.model_order {
++            let queue = state.queues.get(model);
++            let depth = queue.map_or(0, |queue| queue.waiters.len());
++            let bytes = queue.map_or(0, |queue| {
++                queue.waiters.iter().map(|waiter| waiter.body_bytes).sum()
++            });
++            let oldest = queue
++                .and_then(|queue| queue.waiters.front())
++                .map_or(Duration::ZERO, |waiter| waiter.enqueued_at.elapsed());
++            RouterMetrics::set_admission_queue_depth(model, depth);
++            RouterMetrics::set_admission_queue_bytes(model, bytes);
++            RouterMetrics::set_admission_oldest_wait(model, oldest);
++        }
++    }
++
++    fn snapshot(&self) -> AdmissionSnapshot {
++        let state = self.state.lock().expect("admission state poisoned");
++        AdmissionSnapshot {
++            active_by_worker: state.active_by_worker.clone(),
++            queued_by_model: state
++                .queues
++                .iter()
++                .map(|(model, queue)| (model.clone(), queue.waiters.len()))
++                .collect(),
++            queued_count: state.queued_count,
++            queued_bytes: state.queued_bytes,
++        }
++    }
++}
++
++struct QueueCancellation {
++    inner: Weak<AdmissionInner>,
++    model: String,
++    ticket_id: u64,
++    active: bool,
++}
++
++impl Drop for QueueCancellation {
++    fn drop(&mut self) {
++        if !self.active {
++            return;
++        }
++        if let Some(inner) = self.inner.upgrade() {
++            inner.cancel_waiter(&self.model, self.ticket_id, "client_cancelled");
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::core::{BasicWorker, WorkerType};
++    use serde_json::json;
++
++    fn fixture(worker_count: usize, capacity: usize, max_waiting: usize) -> GlobalFifoAdmission {
++        let registry = Arc::new(WorkerRegistry::new());
++        for index in 0..worker_count {
++            registry.register(Arc::new(BasicWorker::new(
++                format!("http://worker-{index}:8000"),
++                WorkerType::Regular,
++            )));
++        }
++        GlobalFifoAdmission::new(
++            GlobalFifoConfig {
++                worker_capacity: capacity,
++                max_waiting,
++                max_queued_bytes: 1024,
++                queue_timeout: Duration::from_secs(1),
++            },
++            registry,
++        )
++    }
++
++    #[tokio::test]
++    async fn reserves_synchronously_and_never_exceeds_worker_capacity() {
++        let admission = fixture(4, 2, 8);
++        let request = json!({"prompt": "test"});
++        let mut assignments = Vec::new();
++        for _ in 0..8 {
++            assignments.push(
++                admission
++                    .acquire("model", "/generate", Some(10), &request, None)
++                    .await
++                    .unwrap(),
++            );
++        }
++        let snapshot = admission.snapshot();
++        assert_eq!(snapshot.active_by_worker.len(), 4);
++        assert!(snapshot
++            .active_by_worker
++            .values()
++            .all(|active| *active == 2));
++        assert_eq!(snapshot.queued_count, 0);
++        drop(assignments);
++        assert!(admission
++            .snapshot()
++            .active_by_worker
++            .values()
++            .all(|active| *active == 0));
++    }
++
++    #[tokio::test]
++    async fn preserves_fifo_when_a_slot_is_released() {
++        let admission = fixture(1, 1, 4);
++        let request = json!({"prompt": "test"});
++        let first = admission
++            .acquire("model", "/generate", Some(10), &request, None)
++            .await
++            .unwrap();
++
++        let second_task = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(10), &request, None)
++                    .await
++                    .unwrap()
++            })
++        };
++        tokio::task::yield_now().await;
++        let third_task = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(10), &request, None)
++                    .await
++                    .unwrap()
++            })
++        };
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        assert_eq!(admission.snapshot().queued_count, 2);
++        drop(first);
++        let second = second_task.await.unwrap();
++        assert!(!third_task.is_finished());
++        drop(second);
++        let third = third_task.await.unwrap();
++        assert!(third.ticket_id > 0);
++    }
++
++    #[tokio::test]
++    async fn cancelled_waiter_releases_queue_bytes() {
++        let admission = fixture(1, 1, 4);
++        let request = json!({"prompt": "test"});
++        let first = admission
++            .acquire("model", "/generate", Some(10), &request, None)
++            .await
++            .unwrap();
++        let task = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(37), &request, None)
++                    .await
++            })
++        };
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        assert_eq!(admission.snapshot().queued_bytes, 37);
++        task.abort();
++        let _ = task.await;
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        assert_eq!(admission.snapshot().queued_bytes, 0);
++        drop(first);
++    }
++
++    #[tokio::test]
++    async fn retry_excludes_failed_worker_when_an_alternative_exists() {
++        let admission = fixture(2, 1, 4);
++        let request = json!({"prompt": "test"});
++        let first = admission
++            .acquire("model", "/generate", Some(10), &request, None)
++            .await
++            .unwrap();
++        let failed_url = first.worker.url().to_string();
++        drop(first);
++        let retry = admission
++            .acquire("model", "/generate", Some(10), &request, Some(&failed_url))
++            .await
++            .unwrap();
++        assert_ne!(retry.worker.url(), failed_url);
++    }
++
++    #[tokio::test]
++    async fn enforces_request_and_byte_queue_limits() {
++        let admission = fixture(1, 1, 1);
++        let request = json!({"prompt": "test"});
++        let first = admission
++            .acquire("model", "/generate", Some(10), &request, None)
++            .await
++            .unwrap();
++        let queued = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(10), &request, None)
++                    .await
++            })
++        };
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        assert!(matches!(
++            admission
++                .acquire("model", "/generate", Some(10), &request, None)
++                .await,
++            Err(AdmissionError::QueueFull)
++        ));
++        queued.abort();
++        let _ = queued.await;
++        drop(first);
++
++        let byte_limited = GlobalFifoAdmission::new(
++            GlobalFifoConfig {
++                worker_capacity: 1,
++                max_waiting: 2,
++                max_queued_bytes: 5,
++                queue_timeout: Duration::from_secs(1),
++            },
++            admission.inner.worker_registry.clone(),
++        );
++        let active = byte_limited
++            .acquire("model", "/generate", Some(1), &request, None)
++            .await
++            .unwrap();
++        assert!(matches!(
++            byte_limited
++                .acquire("model", "/generate", Some(6), &request, None)
++                .await,
++            Err(AdmissionError::QueueBytesFull)
++        ));
++        drop(active);
++    }
++
++    #[tokio::test]
++    async fn burst_128_never_dispatches_more_than_32() {
++        let admission = fixture(4, 8, 96);
++        let request = json!({"prompt": "burst"});
++        let mut active = Vec::new();
++        for _ in 0..32 {
++            active.push(
++                admission
++                    .acquire("model", "/generate", Some(8), &request, None)
++                    .await
++                    .unwrap(),
++            );
++        }
++
++        let mut queued = Vec::new();
++        for _ in 0..96 {
++            let admission = admission.clone();
++            let request = request.clone();
++            queued.push(tokio::spawn(async move {
++                let assignment = admission
++                    .acquire("model", "/generate", Some(8), &request, None)
++                    .await
++                    .unwrap();
++                drop(assignment);
++            }));
++        }
++        for _ in 0..100 {
++            if admission.snapshot().queued_count == 96 {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(2)).await;
++        }
++
++        let snapshot = admission.snapshot();
++        assert_eq!(snapshot.queued_count, 96);
++        assert_eq!(snapshot.active_by_worker.values().sum::<usize>(), 32);
++        assert!(snapshot
++            .active_by_worker
++            .values()
++            .all(|active| *active <= 8));
++        assert!(matches!(
++            admission
++                .acquire("model", "/generate", Some(8), &request, None)
++                .await,
++            Err(AdmissionError::QueueFull)
++        ));
++
++        drop(active);
++        for task in queued {
++            tokio::time::timeout(Duration::from_secs(2), task)
++                .await
++                .expect("queued burst stalled")
++                .unwrap();
++        }
++        let drained = admission.snapshot();
++        assert_eq!(drained.queued_count, 0);
++        assert!(drained.active_by_worker.values().all(|active| *active == 0));
++    }
++
++    #[tokio::test]
++    async fn queue_timeout_removes_waiter_and_bytes() {
++        let registry = Arc::new(WorkerRegistry::new());
++        registry.register(Arc::new(BasicWorker::new(
++            "http://worker:8000".to_string(),
++            WorkerType::Regular,
++        )));
++        let admission = GlobalFifoAdmission::new(
++            GlobalFifoConfig {
++                worker_capacity: 1,
++                max_waiting: 2,
++                max_queued_bytes: 1024,
++                queue_timeout: Duration::from_millis(25),
++            },
++            registry,
++        );
++        let request = json!({"prompt": "timeout"});
++        let active = admission
++            .acquire("model", "/generate", Some(8), &request, None)
++            .await
++            .unwrap();
++        assert!(matches!(
++            admission
++                .acquire("model", "/generate", Some(91), &request, None)
++                .await,
++            Err(AdmissionError::QueueTimeout)
++        ));
++        let snapshot = admission.snapshot();
++        assert_eq!(snapshot.queued_count, 0);
++        assert_eq!(snapshot.queued_bytes, 0);
++        drop(active);
++    }
++
++    #[tokio::test]
++    async fn health_loss_and_recovery_change_only_future_dispatches() {
++        let admission = fixture(2, 1, 4);
++        let request = json!({"prompt": "health"});
++        let first = admission
++            .acquire("model", "/generate", Some(8), &request, None)
++            .await
++            .unwrap();
++        let second = admission
++            .acquire("model", "/generate", Some(8), &request, None)
++            .await
++            .unwrap();
++        let failed_worker = first.worker.clone();
++        failed_worker.set_healthy(false);
++
++        let waiting = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(8), &request, None)
++                    .await
++                    .unwrap()
++            })
++        };
++        tokio::time::sleep(Duration::from_millis(5)).await;
++        drop(first);
++        drop(second);
++        let assignment = tokio::time::timeout(Duration::from_secs(1), waiting)
++            .await
++            .unwrap()
++            .unwrap();
++        assert_ne!(assignment.worker.url(), failed_worker.url());
++
++        let waiting_after_recovery = {
++            let admission = admission.clone();
++            let request = request.clone();
++            tokio::spawn(async move {
++                admission
++                    .acquire("model", "/generate", Some(8), &request, None)
++                    .await
++                    .unwrap()
++            })
++        };
++        tokio::time::sleep(Duration::from_millis(5)).await;
++        failed_worker.set_healthy(true);
++        admission.inner.drive();
++        let recovered = tokio::time::timeout(Duration::from_secs(1), waiting_after_recovery)
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(recovered.worker.url(), failed_worker.url());
++        drop(recovered);
++        drop(assignment);
++    }
++}
+diff --git a/src/config/types.rs b/src/config/types.rs
+index 413022f..d9369de 100644
+--- a/src/config/types.rs
++++ b/src/config/types.rs
+@@ -218,6 +218,18 @@ pub enum PolicyConfig {
+     #[serde(rename = "round_robin")]
+     RoundRobin,
+ 
++    #[serde(rename = "global_fifo")]
++    GlobalFifo {
++        /// Maximum dispatched requests owned by one worker.
++        worker_capacity: usize,
++        /// Maximum requests waiting at the Router.
++        queue_size: usize,
++        /// Maximum serialized bytes retained by waiting requests.
++        queue_bytes: usize,
++        /// Maximum time a request may wait for a worker slot.
++        queue_timeout_secs: u64,
++    },
++
+     #[serde(rename = "cache_aware")]
+     CacheAware {
+         /// Minimum prefix match ratio to use cache-based routing
+@@ -253,12 +265,30 @@ impl PolicyConfig {
+         match self {
+             PolicyConfig::Random => "random",
+             PolicyConfig::RoundRobin => "round_robin",
++            PolicyConfig::GlobalFifo { .. } => "global_fifo",
+             PolicyConfig::CacheAware { .. } => "cache_aware",
+             PolicyConfig::PowerOfTwo { .. } => "power_of_two",
+             PolicyConfig::ConsistentHash { .. } => "consistent_hash",
+             PolicyConfig::RendezvousHash => "rendezvous_hash",
+         }
+     }
++
++    pub fn global_fifo_config(&self) -> Option<(usize, usize, usize, u64)> {
++        match self {
++            PolicyConfig::GlobalFifo {
++                worker_capacity,
++                queue_size,
++                queue_bytes,
++                queue_timeout_secs,
++            } => Some((
++                *worker_capacity,
++                *queue_size,
++                *queue_bytes,
++                *queue_timeout_secs,
++            )),
++            _ => None,
++        }
++    }
+ }
+ 
+ /// Service discovery configuration
+@@ -700,6 +730,16 @@ mod tests {
+     fn test_policy_config_name() {
+         assert_eq!(PolicyConfig::Random.name(), "random");
+         assert_eq!(PolicyConfig::RoundRobin.name(), "round_robin");
++        assert_eq!(
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 96,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 43_200,
++            }
++            .name(),
++            "global_fifo"
++        );
+ 
+         let cache_aware = PolicyConfig::CacheAware {
+             cache_threshold: 0.8,
+@@ -723,6 +763,20 @@ mod tests {
+         let json = serde_json::to_string(&random).unwrap();
+         assert_eq!(json, r#"{"type":"random"}"#);
+ 
++        let global_fifo = PolicyConfig::GlobalFifo {
++            worker_capacity: 8,
++            queue_size: 96,
++            queue_bytes: 1_073_741_824,
++            queue_timeout_secs: 43_200,
++        };
++        let json = serde_json::to_string(&global_fifo).unwrap();
++        let roundtrip: PolicyConfig = serde_json::from_str(&json).unwrap();
++        assert_eq!(roundtrip.name(), "global_fifo");
++        assert_eq!(
++            roundtrip.global_fifo_config(),
++            Some((8, 96, 1_073_741_824, 43_200))
++        );
++
+         // Test CacheAware with all parameters
+         let cache_aware = PolicyConfig::CacheAware {
+             cache_threshold: 0.8,
+diff --git a/src/config/validation.rs b/src/config/validation.rs
+index bf678a5..d4b4171 100644
+--- a/src/config/validation.rs
++++ b/src/config/validation.rs
+@@ -129,6 +129,30 @@ impl ConfigValidator {
+             PolicyConfig::Random | PolicyConfig::RoundRobin => {
+                 // No specific validation needed
+             }
++            PolicyConfig::GlobalFifo {
++                worker_capacity,
++                queue_size,
++                queue_bytes,
++                queue_timeout_secs,
++            } => {
++                for (field, value) in [
++                    ("global_fifo.worker_capacity", *worker_capacity),
++                    ("global_fifo.queue_size", *queue_size),
++                    ("global_fifo.queue_bytes", *queue_bytes),
++                    (
++                        "global_fifo.queue_timeout_secs",
++                        *queue_timeout_secs as usize,
++                    ),
++                ] {
++                    if value == 0 {
++                        return Err(ConfigError::InvalidValue {
++                            field: field.to_string(),
++                            value: value.to_string(),
++                            reason: "Must be > 0".to_string(),
++                        });
++                    }
++                }
++            }
+             PolicyConfig::CacheAware {
+                 cache_threshold,
+                 balance_abs_threshold: _,
+@@ -450,6 +474,15 @@ impl ConfigValidator {
+             }
+         }
+ 
++        if matches!(&config.policy, PolicyConfig::GlobalFifo { .. })
++            && !matches!(&config.mode, RoutingMode::Regular { .. })
++        {
++            return Err(ConfigError::IncompatibleConfig {
++                reason: "global_fifo admission currently supports regular routing mode only"
++                    .to_string(),
++            });
++        }
++
+         // DP-aware routing is now automatically enabled when data_parallel_size > 1
+         // and is compatible with service discovery
+ 
+@@ -527,6 +560,83 @@ mod tests {
+         assert!(ConfigValidator::validate(&config).is_ok());
+     }
+ 
++    #[test]
++    fn test_validate_global_fifo_regular_mode() {
++        let config = RouterConfig::new(
++            RoutingMode::Regular {
++                worker_urls: vec!["http://worker:8000".to_string()],
++            },
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 96,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 43_200,
++            },
++        );
++
++        assert!(ConfigValidator::validate(&config).is_ok());
++    }
++
++    #[test]
++    fn test_validate_global_fifo_rejects_zero_limits() {
++        for policy in [
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 0,
++                queue_size: 96,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 43_200,
++            },
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 0,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 43_200,
++            },
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 96,
++                queue_bytes: 0,
++                queue_timeout_secs: 43_200,
++            },
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 96,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 0,
++            },
++        ] {
++            let config = RouterConfig::new(
++                RoutingMode::Regular {
++                    worker_urls: vec!["http://worker:8000".to_string()],
++                },
++                policy,
++            );
++            assert!(ConfigValidator::validate(&config).is_err());
++        }
++    }
++
++    #[test]
++    fn test_validate_global_fifo_rejects_pd_mode() {
++        let config = RouterConfig::new(
++            RoutingMode::VllmPrefillDecode {
++                prefill_urls: vec![("http://prefill:8000".to_string(), None)],
++                decode_urls: vec!["http://decode:8000".to_string()],
++                prefill_policy: None,
++                decode_policy: None,
++                discovery_address: None,
++            },
++            PolicyConfig::GlobalFifo {
++                worker_capacity: 8,
++                queue_size: 96,
++                queue_bytes: 1_073_741_824,
++                queue_timeout_secs: 43_200,
++            },
++        );
++
++        let error = ConfigValidator::validate(&config).unwrap_err();
++        assert!(error.to_string().contains("regular routing mode only"));
++    }
++
+     #[test]
+     fn test_validate_empty_worker_urls() {
+         let config = RouterConfig::new(
+diff --git a/src/core/worker.rs b/src/core/worker.rs
+index f48a8a2..7f5502a 100644
+--- a/src/core/worker.rs
++++ b/src/core/worker.rs
+@@ -884,10 +884,6 @@ pub fn start_health_checker(
+         let mut interval =
+             tokio::time::interval(tokio::time::Duration::from_secs(check_interval_secs));
+ 
+-        // Counter for periodic load reset (every 10 health check cycles)
+-        let mut check_count = 0u64;
+-        const LOAD_RESET_INTERVAL: u64 = 10;
+-
+         loop {
+             interval.tick().await;
+ 
+@@ -897,8 +893,6 @@ pub fn start_health_checker(
+                 break;
+             }
+ 
+-            check_count += 1;
+-
+             // Check health of all workers
+             let workers_to_check = match workers.read() {
+                 Ok(guard) => guard.clone(),
+@@ -908,22 +902,6 @@ pub fn start_health_checker(
+                 }
+             };
+ 
+-            // Periodically reset load counters to prevent drift
+-            // Only do this when we believe all workers should be idle
+-            if check_count.is_multiple_of(LOAD_RESET_INTERVAL) {
+-                let max_load = workers_to_check.iter().map(|w| w.load()).max().unwrap_or(0);
+-                // Only reset if load appears to be very low (likely drift)
+-                if max_load <= 2 {
+-                    tracing::debug!(
+-                        "Resetting load counters to prevent drift (max_load: {})",
+-                        max_load
+-                    );
+-                    for worker in &workers_to_check {
+-                        worker.reset_load();
+-                    }
+-                }
+-            }
+-
+             // Perform health checks concurrently
+             let health_checks = workers_to_check.iter().map(|worker| {
+                 let worker_url = worker.url().to_string();
+diff --git a/src/core/worker_registry.rs b/src/core/worker_registry.rs
+index ec9e340..54afbdd 100644
+--- a/src/core/worker_registry.rs
++++ b/src/core/worker_registry.rs
+@@ -364,10 +364,6 @@ impl WorkerRegistry {
+             let mut interval =
+                 tokio::time::interval(tokio::time::Duration::from_secs(check_interval_secs));
+ 
+-            // Counter for periodic load reset (every 10 health check cycles)
+-            let mut check_count = 0u64;
+-            const LOAD_RESET_INTERVAL: u64 = 10;
+-
+             loop {
+                 interval.tick().await;
+ 
+@@ -387,15 +383,6 @@ impl WorkerRegistry {
+                 for worker in &workers {
+                     let _ = worker.check_health_async().await; // Use async version directly
+                 }
+-
+-                // Reset loads periodically
+-                check_count += 1;
+-                if check_count.is_multiple_of(LOAD_RESET_INTERVAL) {
+-                    tracing::debug!("Resetting worker loads (cycle {})", check_count);
+-                    for worker in &workers {
+-                        worker.reset_load();
+-                    }
+-                }
+             }
+         });
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 5c4c406..7562a6d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ use pyo3::prelude::*;
++pub mod admission;
+ pub mod config;
+ pub mod logging;
+ use std::collections::HashMap;
+@@ -23,6 +24,7 @@ use crate::metrics::PrometheusConfig;
+ pub enum PolicyType {
+     Random,
+     RoundRobin,
++    GlobalFifo,
+     CacheAware,
+     PowerOfTwo,
+     ConsistentHash,
+@@ -111,6 +113,12 @@ impl Router {
+             match policy {
+                 PolicyType::Random => ConfigPolicyConfig::Random,
+                 PolicyType::RoundRobin => ConfigPolicyConfig::RoundRobin,
++                PolicyType::GlobalFifo => ConfigPolicyConfig::GlobalFifo {
++                    worker_capacity: 8,
++                    queue_size: 96,
++                    queue_bytes: 1_073_741_824,
++                    queue_timeout_secs: 43_200,
++                },
+                 PolicyType::CacheAware => ConfigPolicyConfig::CacheAware {
+                     cache_threshold: self.cache_threshold,
+                     balance_abs_threshold: self.balance_abs_threshold,
+diff --git a/src/main.rs b/src/main.rs
+index a642898..697c854 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -107,9 +107,25 @@ struct CliArgs {
+     worker_urls: Vec<String>,
+ 
+     /// Load balancing policy to use
+-    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
++    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "global_fifo", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+     policy: String,
+ 
++    /// Maximum requests dispatched to each worker by global_fifo.
++    #[arg(long, default_value_t = 8)]
++    global_fifo_worker_capacity: usize,
++
++    /// Maximum generation requests waiting in the global_fifo queue.
++    #[arg(long, default_value_t = 96)]
++    global_fifo_queue_size: usize,
++
++    /// Maximum request bytes retained in the global_fifo queue.
++    #[arg(long, default_value_t = 1073741824)]
++    global_fifo_queue_bytes: usize,
++
++    /// Maximum seconds a generation request may wait in global_fifo.
++    #[arg(long, default_value_t = 43200)]
++    global_fifo_queue_timeout_secs: u64,
++
+     /// Enable vLLM PD (Prefill-Decode) disaggregated mode with vLLM-specific two-stage processing
+     #[arg(long, default_value_t = false)]
+     vllm_pd_disaggregation: bool,
+@@ -359,6 +375,12 @@ impl CliArgs {
+         match policy_str {
+             "random" => PolicyConfig::Random,
+             "round_robin" => PolicyConfig::RoundRobin,
++            "global_fifo" => PolicyConfig::GlobalFifo {
++                worker_capacity: self.global_fifo_worker_capacity,
++                queue_size: self.global_fifo_queue_size,
++                queue_bytes: self.global_fifo_queue_bytes,
++                queue_timeout_secs: self.global_fifo_queue_timeout_secs,
++            },
+             "cache_aware" => PolicyConfig::CacheAware {
+                 cache_threshold: self.cache_threshold,
+                 balance_abs_threshold: self.balance_abs_threshold,
+diff --git a/src/metrics.rs b/src/metrics.rs
+index ee13ed1..456da1f 100644
+--- a/src/metrics.rs
++++ b/src/metrics.rs
+@@ -79,6 +79,10 @@ pub fn init_metrics() {
+         "vllm_router_policy_decisions_total",
+         "Total routing policy decisions by policy and worker"
+     );
++    describe_histogram!(
++        "vllm_router_dispatch_duration_seconds",
++        "Time spent selecting and reserving a worker by policy"
++    );
+     describe_counter!("vllm_router_cache_hits_total", "Total cache hits");
+     describe_counter!("vllm_router_cache_misses_total", "Total cache misses");
+     describe_gauge!(
+@@ -164,6 +168,64 @@ pub fn init_metrics() {
+         "Number of running requests per worker"
+     );
+ 
++    // Strict global FIFO admission metrics
++    describe_gauge!(
++        "vllm_router_admission_queue_depth",
++        "Queued generation requests by model"
++    );
++    describe_gauge!(
++        "vllm_router_admission_queue_depth_total",
++        "Queued generation requests across all models"
++    );
++    describe_gauge!(
++        "vllm_router_admission_queue_bytes",
++        "Queued generation request bytes by model"
++    );
++    describe_gauge!(
++        "vllm_router_admission_queue_bytes_total",
++        "Queued generation request bytes across all models"
++    );
++    describe_gauge!(
++        "vllm_router_admission_oldest_wait_seconds",
++        "Age of the oldest queued generation request by model"
++    );
++    describe_histogram!(
++        "vllm_router_admission_wait_seconds",
++        "Generation request admission wait duration by model"
++    );
++    describe_gauge!(
++        "vllm_router_admission_worker_slots_used",
++        "Router-authoritative admission slots currently used per worker"
++    );
++    describe_counter!(
++        "vllm_router_admission_dispatch_total",
++        "Generation requests dispatched by model and worker"
++    );
++    describe_counter!(
++        "vllm_router_admission_cancellations_total",
++        "Queued requests cancelled by model and reason"
++    );
++    describe_counter!(
++        "vllm_router_admission_timeouts_total",
++        "Queued requests that exceeded the admission timeout by model"
++    );
++    describe_counter!(
++        "vllm_router_admission_rejections_total",
++        "Admission requests rejected by model and limit"
++    );
++    describe_counter!(
++        "vllm_router_admission_retries_total",
++        "Backend retries re-admitted at the FIFO tail by model"
++    );
++    describe_counter!(
++        "vllm_router_admission_invariant_violations_total",
++        "Admission state invariant violations by type"
++    );
++    describe_histogram!(
++        "vllm_router_worker_request_duration_seconds",
++        "Router-observed request lifetime by worker and route"
++    );
++
+     // Tokenizer metrics
+     describe_histogram!(
+         "vllm_tokenizer_encode_duration_seconds",
+@@ -262,6 +324,11 @@ pub fn start_prometheus(config: PrometheusConfig) {
+         0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 45.0,
+         60.0, 90.0, 120.0, 180.0, 240.0,
+     ];
++    let dispatch_duration_matcher =
++        Matcher::Full(String::from("vllm_router_dispatch_duration_seconds"));
++    let dispatch_duration_bucket = [
++        0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.01,
++    ];
+ 
+     let ip_addr: IpAddr = config
+         .host
+@@ -274,6 +341,8 @@ pub fn start_prometheus(config: PrometheusConfig) {
+         .upkeep_timeout(Duration::from_secs(5 * 60))
+         .set_buckets_for_metric(duration_matcher, &duration_bucket)
+         .expect("failed to set duration bucket")
++        .set_buckets_for_metric(dispatch_duration_matcher, &dispatch_duration_bucket)
++        .expect("failed to set dispatch duration bucket")
+         .install()
+         .expect("failed to install Prometheus metrics exporter");
+ }
+@@ -362,6 +431,13 @@ impl RouterMetrics {
+         .increment(1);
+     }
+ 
++    pub fn record_dispatch_duration(policy: &str, duration: Duration) {
++        histogram!("vllm_router_dispatch_duration_seconds",
++            "policy" => policy.to_string()
++        )
++        .record(duration.as_secs_f64());
++    }
++
+     pub fn record_cache_hit() {
+         counter!("vllm_router_cache_hits_total").increment(1);
+     }
+@@ -484,6 +560,102 @@ impl RouterMetrics {
+         .set(count as f64);
+     }
+ 
++    pub fn set_admission_queue_depth(model: &str, count: usize) {
++        gauge!("vllm_router_admission_queue_depth",
++            "model" => model.to_string()
++        )
++        .set(count as f64);
++    }
++
++    pub fn set_admission_queue_depth_total(count: usize) {
++        gauge!("vllm_router_admission_queue_depth_total").set(count as f64);
++    }
++
++    pub fn set_admission_queue_bytes(model: &str, bytes: usize) {
++        gauge!("vllm_router_admission_queue_bytes",
++            "model" => model.to_string()
++        )
++        .set(bytes as f64);
++    }
++
++    pub fn set_admission_queue_bytes_total(bytes: usize) {
++        gauge!("vllm_router_admission_queue_bytes_total").set(bytes as f64);
++    }
++
++    pub fn set_admission_oldest_wait(model: &str, duration: Duration) {
++        gauge!("vllm_router_admission_oldest_wait_seconds",
++            "model" => model.to_string()
++        )
++        .set(duration.as_secs_f64());
++    }
++
++    pub fn record_admission_wait(model: &str, duration: Duration) {
++        histogram!("vllm_router_admission_wait_seconds",
++            "model" => model.to_string()
++        )
++        .record(duration.as_secs_f64());
++    }
++
++    pub fn set_admission_worker_slots(worker: &str, count: usize) {
++        gauge!("vllm_router_admission_worker_slots_used",
++            "worker" => worker.to_string()
++        )
++        .set(count as f64);
++    }
++
++    pub fn record_admission_dispatch(model: &str, worker: &str) {
++        counter!("vllm_router_admission_dispatch_total",
++            "model" => model.to_string(),
++            "worker" => worker.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_admission_cancellation(model: &str, reason: &str) {
++        counter!("vllm_router_admission_cancellations_total",
++            "model" => model.to_string(),
++            "reason" => reason.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_admission_timeout(model: &str) {
++        counter!("vllm_router_admission_timeouts_total",
++            "model" => model.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_admission_rejection(model: &str, reason: &str) {
++        counter!("vllm_router_admission_rejections_total",
++            "model" => model.to_string(),
++            "reason" => reason.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_admission_retry(model: &str) {
++        counter!("vllm_router_admission_retries_total",
++            "model" => model.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_admission_invariant_violation(violation: &str) {
++        counter!("vllm_router_admission_invariant_violations_total",
++            "violation" => violation.to_string()
++        )
++        .increment(1);
++    }
++
++    pub fn record_worker_request_duration(worker: &str, route: &str, duration: Duration) {
++        histogram!("vllm_router_worker_request_duration_seconds",
++            "worker" => worker.to_string(),
++            "route" => route.to_string()
++        )
++        .record(duration.as_secs_f64());
++    }
++
+     // Circuit breaker metrics
+     pub fn set_cb_state(worker: &str, state_code: u8) {
+         gauge!("vllm_router_cb_state",
+diff --git a/src/middleware.rs b/src/middleware.rs
+index e5daa1f..b5bc9c3 100644
+--- a/src/middleware.rs
++++ b/src/middleware.rs
+@@ -499,8 +499,31 @@ pub async fn concurrency_limit_middleware(
+     // Static counter for embeddings queue size
+     static EMBEDDINGS_QUEUE_SIZE: AtomicU64 = AtomicU64::new(0);
+ 
++    let path = request.uri().path();
++    let is_generation = matches!(
++        path,
++        "/generate"
++            | "/inference/v1/generate"
++            | "/v1/chat/completions"
++            | "/v1/completions"
++            | "/v1/responses"
++    );
++    if is_generation
++        && app_state
++            .context
++            .router_config
++            .policy
++            .global_fifo_config()
++            .is_some()
++    {
++        // Global FIFO owns both admission and waiting for generation routes.
++        // Applying the legacy time-refilled token bucket here would create a
++        // second queue and break first-available dispatch.
++        return next.run(request).await;
++    }
++
+     // Identify if this is an embeddings request based on path
+-    let is_embeddings = request.uri().path().contains("/v1/embeddings");
++    let is_embeddings = path.contains("/v1/embeddings");
+     let token_bucket = app_state.context.rate_limiter.clone();
+ 
+     // Try to acquire token immediately
+diff --git a/src/policies/factory.rs b/src/policies/factory.rs
+index 08ff2d8..e81407e 100644
+--- a/src/policies/factory.rs
++++ b/src/policies/factory.rs
+@@ -1,8 +1,8 @@
+ //! Factory for creating load balancing policies
+ 
+ use super::{
+-    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, LoadBalancingPolicy,
+-    PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
++    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, GlobalFifoPolicy,
++    LoadBalancingPolicy, PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
+ };
+ use crate::config::PolicyConfig;
+ use std::sync::Arc;
+@@ -16,6 +16,7 @@ impl PolicyFactory {
+         match config {
+             PolicyConfig::Random => Arc::new(RandomPolicy::new()),
+             PolicyConfig::RoundRobin => Arc::new(RoundRobinPolicy::new()),
++            PolicyConfig::GlobalFifo { .. } => Arc::new(GlobalFifoPolicy::new()),
+             PolicyConfig::PowerOfTwo { .. } => Arc::new(PowerOfTwoPolicy::new()),
+             PolicyConfig::CacheAware {
+                 cache_threshold,
+@@ -47,6 +48,7 @@ impl PolicyFactory {
+         match name.to_lowercase().as_str() {
+             "random" => Some(Arc::new(RandomPolicy::new())),
+             "round_robin" | "roundrobin" => Some(Arc::new(RoundRobinPolicy::new())),
++            "global_fifo" | "globalfifo" => Some(Arc::new(GlobalFifoPolicy::new())),
+             "power_of_two" | "poweroftwo" => Some(Arc::new(PowerOfTwoPolicy::new())),
+             "cache_aware" | "cacheaware" => Some(Arc::new(CacheAwarePolicy::new())),
+             "consistent_hash" | "consistenthash" => Some(Arc::new(ConsistentHashPolicy::new())),
+diff --git a/src/policies/global_fifo.rs b/src/policies/global_fifo.rs
+new file mode 100644
+index 0000000..7dd687e
+--- /dev/null
++++ b/src/policies/global_fifo.rs
+@@ -0,0 +1,51 @@
++//! Non-generation fallback selector for the global FIFO Router mode.
++//!
++//! Generation routes are dispatched by `GlobalFifoAdmission`. Other typed
++//! routes retain deterministic round-robin behavior through this policy.
++
++use super::{get_healthy_worker_indices, LoadBalancingPolicy, RequestHeaders};
++use crate::core::Worker;
++use crate::metrics::RouterMetrics;
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::Arc;
++
++#[derive(Debug, Default)]
++pub struct GlobalFifoPolicy {
++    counter: AtomicUsize,
++}
++
++impl GlobalFifoPolicy {
++    pub fn new() -> Self {
++        Self::default()
++    }
++}
++
++impl LoadBalancingPolicy for GlobalFifoPolicy {
++    fn select_worker_with_headers(
++        &self,
++        workers: &[Arc<dyn Worker>],
++        _request_text: Option<&str>,
++        _headers: Option<&RequestHeaders>,
++    ) -> Option<usize> {
++        let healthy = get_healthy_worker_indices(workers);
++        if healthy.is_empty() {
++            return None;
++        }
++        let index = healthy[self.counter.fetch_add(1, Ordering::Relaxed) % healthy.len()];
++        RouterMetrics::record_processed_request(workers[index].url());
++        RouterMetrics::record_policy_decision(self.name(), workers[index].url());
++        Some(index)
++    }
++
++    fn name(&self) -> &'static str {
++        "global_fifo"
++    }
++
++    fn reset(&self) {
++        self.counter.store(0, Ordering::Relaxed);
++    }
++
++    fn as_any(&self) -> &dyn std::any::Any {
++        self
++    }
++}
+diff --git a/src/policies/mod.rs b/src/policies/mod.rs
+index 5948176..43dbdbd 100644
+--- a/src/policies/mod.rs
++++ b/src/policies/mod.rs
+@@ -11,6 +11,7 @@ use std::sync::Arc;
+ mod cache_aware;
+ mod consistent_hash;
+ mod factory;
++mod global_fifo;
+ mod hash_key;
+ mod power_of_two;
+ mod random;
+@@ -22,6 +23,7 @@ pub use cache_aware::CacheAwarePolicy;
+ pub use consistent_hash::ConsistentHashPolicy;
+ pub use consistent_hash::VIRTUAL_NODES_PER_WORKER;
+ pub use factory::PolicyFactory;
++pub use global_fifo::GlobalFifoPolicy;
+ pub use power_of_two::PowerOfTwoPolicy;
+ pub use random::RandomPolicy;
+ pub use registry::PolicyRegistry;
+diff --git a/src/policies/registry.rs b/src/policies/registry.rs
+index fb75901..5f5ad4a 100644
+--- a/src/policies/registry.rs
++++ b/src/policies/registry.rs
+@@ -5,8 +5,8 @@
+ /// All subsequent workers of the same model use the established policy.
+ /// When the last worker of a model is removed, the policy mapping is cleaned up.
+ use super::{
+-    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, LoadBalancingPolicy,
+-    PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
++    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, GlobalFifoPolicy,
++    LoadBalancingPolicy, PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
+ };
+ use crate::config::types::PolicyConfig;
+ use std::collections::HashMap;
+@@ -169,6 +169,7 @@ impl PolicyRegistry {
+     fn create_policy_from_type(&self, policy_type: &str) -> Arc<dyn LoadBalancingPolicy> {
+         match policy_type {
+             "round_robin" => Arc::new(RoundRobinPolicy::new()),
++            "global_fifo" => Arc::new(GlobalFifoPolicy::new()),
+             "random" => Arc::new(RandomPolicy::new()),
+             "cache_aware" => Arc::new(CacheAwarePolicy::new()),
+             "power_of_two" => Arc::new(PowerOfTwoPolicy::new()),
+@@ -184,6 +185,7 @@ impl PolicyRegistry {
+     fn create_policy_from_config(config: &PolicyConfig) -> Arc<dyn LoadBalancingPolicy> {
+         match config {
+             PolicyConfig::RoundRobin => Arc::new(RoundRobinPolicy::new()),
++            PolicyConfig::GlobalFifo { .. } => Arc::new(GlobalFifoPolicy::new()),
+             PolicyConfig::Random => Arc::new(RandomPolicy::new()),
+             PolicyConfig::CacheAware {
+                 cache_threshold,
+diff --git a/src/routers/http/router.rs b/src/routers/http/router.rs
+index f68e4b0..344fb43 100644
+--- a/src/routers/http/router.rs
++++ b/src/routers/http/router.rs
+@@ -1,3 +1,6 @@
++use crate::admission::{
++    AdmissionError, AdmissionLease, GlobalFifoAdmission, GlobalFifoConfig, DEFAULT_MODEL_KEY,
++};
+ use crate::config::types::RetryConfig;
+ use crate::core::{
+     is_retryable_status, BasicWorker, CircuitBreakerConfig, DPAwareWorker, HealthConfig,
+@@ -18,19 +21,151 @@ use axum::{
+     body::Body,
+     extract::Request,
+     http::{
+-        header::CONTENT_LENGTH, header::CONTENT_TYPE, HeaderMap, HeaderValue, Method, StatusCode,
++        header::CONTENT_LENGTH, header::CONTENT_TYPE, header::RETRY_AFTER, HeaderMap, HeaderValue,
++        Method, StatusCode,
+     },
+     response::{IntoResponse, Response},
+     Json,
+ };
+-use futures_util::StreamExt;
++use futures_util::Stream;
+ use reqwest::Client;
+ use std::collections::HashMap;
+-use std::sync::Arc;
++use std::pin::Pin;
++use std::sync::{Arc, Mutex};
++use std::task::{Context, Poll};
+ use std::time::{Duration, Instant};
+-use tokio_stream::wrappers::UnboundedReceiverStream;
+ use tracing::{debug, error, info, warn};
+ 
++/// Owns one router-local in-flight reservation for non-admission policies.
++/// Dropping the guard releases the reservation on every response path.
++struct InflightGuard {
++    worker: Arc<dyn Worker>,
++    route: String,
++    started_at: Instant,
++}
++
++impl InflightGuard {
++    fn new(worker: Arc<dyn Worker>, route: &str) -> Self {
++        worker.increment_load();
++        RouterMetrics::set_running_requests(worker.url(), worker.load());
++        Self {
++            worker,
++            route: route.to_string(),
++            started_at: Instant::now(),
++        }
++    }
++}
++
++impl Drop for InflightGuard {
++    fn drop(&mut self) {
++        self.worker.decrement_load();
++        RouterMetrics::set_running_requests(self.worker.url(), self.worker.load());
++        RouterMetrics::record_worker_request_duration(
++            self.worker.url(),
++            &self.route,
++            self.started_at.elapsed(),
++        );
++    }
++}
++
++enum RequestLease {
++    Inflight { _guard: InflightGuard },
++    Admission { _lease: AdmissionLease },
++}
++
++struct GuardedResponseStream {
++    inner: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
++    _lease: RequestLease,
++}
++
++impl Stream for GuardedResponseStream {
++    type Item = Result<bytes::Bytes, std::io::Error>;
++
++    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
++        match self.inner.as_mut().poll_next(cx) {
++            Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(bytes))),
++            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(std::io::Error::other(
++                format!("Stream error: {error}"),
++            )))),
++            Poll::Ready(None) => Poll::Ready(None),
++            Poll::Pending => Poll::Pending,
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++struct TerminalAdmissionResponse;
++
++fn is_generation_route(route: &str) -> bool {
++    matches!(
++        route,
++        "/generate"
++            | "/inference/v1/generate"
++            | "/v1/chat/completions"
++            | "/v1/completions"
++            | "/v1/responses"
++    )
++}
++
++fn content_length(headers: Option<&HeaderMap>) -> Option<usize> {
++    headers?
++        .get(CONTENT_LENGTH)?
++        .to_str()
++        .ok()?
++        .parse::<usize>()
++        .ok()
++}
++
++fn admission_error_response(error: AdmissionError) -> Response {
++    let (status, error_type, code) = match error {
++        AdmissionError::QueueFull => (
++            StatusCode::TOO_MANY_REQUESTS,
++            "rate_limit_error",
++            "router_admission_queue_full",
++        ),
++        AdmissionError::QueueBytesFull => (
++            StatusCode::TOO_MANY_REQUESTS,
++            "rate_limit_error",
++            "router_admission_bytes_full",
++        ),
++        AdmissionError::QueueTimeout => (
++            StatusCode::REQUEST_TIMEOUT,
++            "request_timeout_error",
++            "router_admission_timeout",
++        ),
++        AdmissionError::RequestSerialization(_) => (
++            StatusCode::BAD_REQUEST,
++            "invalid_request_error",
++            "router_admission_size_error",
++        ),
++        AdmissionError::DispatcherClosed => (
++            StatusCode::SERVICE_UNAVAILABLE,
++            "server_error",
++            "router_admission_unavailable",
++        ),
++    };
++    let message = error.to_string();
++    let mut response = (
++        status,
++        Json(serde_json::json!({
++            "error": {
++                "message": message,
++                "type": error_type,
++                "param": null,
++                "code": code,
++            }
++        })),
++    )
++        .into_response();
++    if status == StatusCode::TOO_MANY_REQUESTS {
++        response
++            .headers_mut()
++            .insert(RETRY_AFTER, HeaderValue::from_static("30"));
++    }
++    response.extensions_mut().insert(TerminalAdmissionResponse);
++    response
++}
++
+ /// Regular router that uses injected load balancing policies
+ #[derive(Debug)]
+ pub struct Router {
+@@ -45,6 +180,7 @@ pub struct Router {
+     circuit_breaker_config: CircuitBreakerConfig,
+     _worker_loads: Arc<tokio::sync::watch::Receiver<HashMap<String, isize>>>,
+     _load_monitor_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
++    global_fifo: Option<GlobalFifoAdmission>,
+ }
+ 
+ impl Router {
+@@ -167,6 +303,26 @@ impl Router {
+             None
+         };
+ 
++        let global_fifo = ctx.router_config.policy.global_fifo_config().map(
++            |(worker_capacity, queue_size, queue_bytes, queue_timeout_secs)| {
++                let admission = GlobalFifoAdmission::new(
++                    GlobalFifoConfig {
++                        worker_capacity,
++                        max_waiting: queue_size,
++                        max_queued_bytes: queue_bytes,
++                        queue_timeout: Duration::from_secs(queue_timeout_secs),
++                    },
++                    ctx.worker_registry.clone(),
++                );
++                admission.start_housekeeping();
++                info!(
++                    worker_capacity,
++                    queue_size, queue_bytes, queue_timeout_secs, "Global FIFO admission enabled"
++                );
++                admission
++            },
++        );
++
+         Ok(Router {
+             worker_registry: ctx.worker_registry.clone(),
+             policy_registry: ctx.policy_registry.clone(),
+@@ -181,6 +337,7 @@ impl Router {
+             circuit_breaker_config: core_cb_config,
+             _worker_loads: worker_loads,
+             _load_monitor_handle: load_monitor_handle,
++            global_fifo,
+         })
+     }
+ 
+@@ -533,7 +690,9 @@ impl Router {
+         // Convert headers for policies that need them (e.g., consistent_hash)
+         let request_headers = Self::headers_to_request_headers(headers);
+ 
++        let dispatch_started = Instant::now();
+         let idx = policy.select_worker_with_headers(&available, text, request_headers.as_ref())?;
++        RouterMetrics::record_dispatch_duration(policy.name(), dispatch_started.elapsed());
+         Some(available[idx].clone())
+     }
+ 
+@@ -547,81 +706,113 @@ impl Router {
+         let start = Instant::now();
+         let is_stream = typed_req.is_stream();
+         let text = typed_req.extract_text_for_routing();
++        let request_model = model_id
++            .or_else(|| typed_req.get_model())
++            .unwrap_or(DEFAULT_MODEL_KEY);
++        let use_global_fifo = self.global_fifo.is_some() && is_generation_route(route);
++        let failed_worker = Arc::new(Mutex::new(None::<String>));
++        let mut retry_config = self.retry_config.clone();
++        if use_global_fifo {
++            // One initial attempt plus one backend retry. Admission errors are
++            // terminal and never consume this retry budget.
++            retry_config.max_retries = 2;
++        }
+ 
+         let response = RetryExecutor::execute_response_with_retry(
+-            &self.retry_config,
++            &retry_config,
+             // operation per attempt
+-            |_: u32| async {
+-                let worker = match self.select_worker_for_model(model_id, Some(&text), headers) {
+-                    Some(w) => w,
+-                    None => {
+-                        RouterMetrics::record_request_error(route, "no_available_workers");
+-                        return (
+-                            StatusCode::SERVICE_UNAVAILABLE,
+-                            "No available workers (all circuits open or unhealthy)",
++            |_attempt: u32| {
++                let failed_worker = failed_worker.clone();
++                let text = text.clone();
++                async move {
++                    let (worker, lease) = if use_global_fifo {
++                        let excluded = failed_worker
++                            .lock()
++                            .expect("failed-worker state poisoned")
++                            .clone();
++                        let admission = self
++                            .global_fifo
++                            .as_ref()
++                            .expect("global FIFO disappeared while routing");
++                        match admission
++                            .acquire(
++                                request_model,
++                                route,
++                                content_length(headers),
++                                typed_req,
++                                excluded.as_deref(),
++                            )
++                            .await
++                        {
++                            Ok(assignment) => (
++                                assignment.worker,
++                                RequestLease::Admission {
++                                    _lease: assignment.lease,
++                                },
++                            ),
++                            Err(error) => return admission_error_response(error),
++                        }
++                    } else {
++                        let worker =
++                            match self.select_worker_for_model(model_id, Some(&text), headers) {
++                                Some(worker) => worker,
++                                None => {
++                                    RouterMetrics::record_request_error(
++                                        route,
++                                        "no_available_workers",
++                                    );
++                                    return (
++                                        StatusCode::SERVICE_UNAVAILABLE,
++                                        "No available workers (all circuits open or unhealthy)",
++                                    )
++                                        .into_response();
++                                }
++                            };
++                        let lease = RequestLease::Inflight {
++                            _guard: InflightGuard::new(worker.clone(), route),
++                        };
++                        (worker, lease)
++                    };
++
++                    let response = self
++                        .send_typed_request(
++                            headers,
++                            typed_req,
++                            route,
++                            worker.url(),
++                            is_stream,
++                            lease,
+                         )
+-                            .into_response();
+-                    }
+-                };
+-
+-                // Optional load tracking for cache-aware policy
+-                // Get the policy for this model to check if it's cache-aware
+-                let policy = match model_id {
+-                    Some(model) => self.policy_registry.get_policy_or_default(model),
+-                    None => self.policy_registry.get_default_policy(),
+-                };
+-
+-                let load_incremented = if policy.name() == "cache_aware" {
+-                    worker.increment_load();
+-                    RouterMetrics::set_running_requests(worker.url(), worker.load());
+-                    true
+-                } else {
+-                    false
+-                };
+-
+-                // Keep a clone for potential cleanup on retry
+-                let worker_for_cleanup = if load_incremented {
+-                    Some(worker.clone())
+-                } else {
+-                    None
+-                };
+-
+-                let response = self
+-                    .send_typed_request(
+-                        headers,
+-                        typed_req,
+-                        route,
+-                        worker.url(),
+-                        is_stream,
+-                        load_incremented,
+-                    )
+-                    .await;
++                        .await;
+ 
+-                // Client errors (4xx) are not worker failures - only server errors (5xx)
+-                // should count against the circuit breaker.
+-                let status = response.status();
+-                worker.record_outcome(status.is_success() || status.is_client_error());
+-
+-                // For retryable failures, we need to decrement load since send_typed_request
+-                // won't have done it (it only decrements on success or non-retryable failures)
+-                if is_retryable_status(response.status()) && load_incremented {
+-                    if let Some(cleanup_worker) = worker_for_cleanup {
+-                        cleanup_worker.decrement_load();
+-                        RouterMetrics::set_running_requests(
+-                            cleanup_worker.url(),
+-                            cleanup_worker.load(),
+-                        );
++                    // Client errors are request failures, not worker failures.
++                    let status = response.status();
++                    worker.record_outcome(status.is_success() || status.is_client_error());
++                    if use_global_fifo && is_retryable_status(status) {
++                        *failed_worker.lock().expect("failed-worker state poisoned") =
++                            Some(worker.url().to_string());
+                     }
++                    response
+                 }
+-
+-                response
+             },
+             // should_retry predicate
+-            |res, _attempt| is_retryable_status(res.status()),
++            |res, attempt| {
++                if res
++                    .extensions()
++                    .get::<TerminalAdmissionResponse>()
++                    .is_some()
++                {
++                    return false;
++                }
++                is_retryable_status(res.status()) && (!use_global_fifo || attempt == 0)
++            },
+             // on_backoff hook
+             |delay, attempt| {
+                 RouterMetrics::record_retry(route);
+                 RouterMetrics::record_retry_backoff_duration(delay, attempt);
++                if use_global_fifo {
++                    RouterMetrics::record_admission_retry(request_model);
++                }
+             },
+             // on_exhausted hook
+             || RouterMetrics::record_retries_exhausted(route),
+@@ -771,7 +962,7 @@ impl Router {
+         route: &str,
+         worker_url: &str,
+         is_stream: bool,
+-        load_incremented: bool, // Whether load was incremented for this request
++        lease: RequestLease,
+     ) -> Response {
+         let (mut request_builder, extracted_dp_rank, request_url) =
+             if self.intra_node_data_parallel_size > 1 {
+@@ -856,14 +1047,6 @@ impl Router {
+                     worker_url, route, e
+                 );
+ 
+-                // Decrement load on error if it was incremented
+-                if load_incremented {
+-                    if let Some(worker) = self.worker_registry.get_by_url(worker_url) {
+-                        worker.decrement_load();
+-                        RouterMetrics::set_running_requests(worker_url, worker.load());
+-                    }
+-                }
+-
+                 return (
+                     StatusCode::INTERNAL_SERVER_ERROR,
+                     format!("Request failed: {}", e),
+@@ -887,121 +1070,194 @@ impl Router {
+                     response
+                 }
+                 Err(e) => {
+-                    // IMPORTANT: Decrement load on error before returning
+-                    if load_incremented {
+-                        if let Some(worker) = self.worker_registry.get_by_url(worker_url) {
+-                            worker.decrement_load();
+-                            RouterMetrics::set_running_requests(worker_url, worker.load());
+-                        }
+-                    }
+-
+                     let error_msg = format!("Failed to get response body: {}", e);
+                     (StatusCode::INTERNAL_SERVER_ERROR, error_msg).into_response()
+                 }
+             };
+-
+-            // Decrement load counter for non-streaming requests if it was incremented
+-            if load_incremented {
+-                if let Some(worker) = self.worker_registry.get_by_url(worker_url) {
+-                    worker.decrement_load();
+-                    RouterMetrics::set_running_requests(worker_url, worker.load());
+-                }
+-            }
+-
++            drop(lease);
+             response
+-        } else if load_incremented {
+-            // For streaming with load tracking, we need to manually decrement when done
+-            let registry = Arc::clone(&self.worker_registry);
+-            let worker_url = worker_url.to_string();
+-
+-            // Preserve headers for streaming response
++        } else {
+             let mut response_headers = header_utils::preserve_response_headers(res.headers());
+-            // Ensure we set the correct content-type for SSE
+             response_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+-
+-            let stream = res.bytes_stream();
+-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+-
+-            // Spawn task to forward stream and detect completion
+-            tokio::spawn(async move {
+-                let mut stream = stream;
+-                let mut decremented = false;
+-                while let Some(chunk) = stream.next().await {
+-                    match chunk {
+-                        Ok(bytes) => {
+-                            // Check for stream end marker
+-                            if bytes
+-                                .as_ref()
+-                                .windows(12)
+-                                .any(|window| window == b"data: [DONE]")
+-                            {
+-                                if let Some(worker) = registry.get_by_url(&worker_url) {
+-                                    worker.decrement_load();
+-                                    RouterMetrics::set_running_requests(&worker_url, worker.load());
+-                                    decremented = true;
+-                                }
+-                            }
+-                            if tx.send(Ok(bytes)).is_err() {
+-                                break;
+-                            }
+-                        }
+-                        Err(e) => {
+-                            let _ = tx.send(Err(format!("Stream error: {}", e)));
+-                            break;
+-                        }
+-                    }
+-                }
+-                if !decremented {
+-                    if let Some(worker) = registry.get_by_url(&worker_url) {
+-                        worker.decrement_load();
+-                        RouterMetrics::set_running_requests(&worker_url, worker.load());
+-                    }
+-                }
+-            });
+-
+-            let stream = UnboundedReceiverStream::new(rx);
++            let stream = GuardedResponseStream {
++                inner: Box::pin(res.bytes_stream()),
++                _lease: lease,
++            };
+             let body = Body::from_stream(stream);
+ 
+             let mut response = Response::new(body);
+             *response.status_mut() = status;
+             *response.headers_mut() = response_headers;
+             response
+-        } else {
+-            // For requests without load tracking, just stream
+-            // Preserve headers for streaming response
+-            let mut response_headers = header_utils::preserve_response_headers(res.headers());
+-            // Ensure we set the correct content-type for SSE
+-            response_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
++        }
++    }
+ 
+-            let stream = res.bytes_stream();
+-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+-
+-            // Spawn task to forward stream
+-            tokio::spawn(async move {
+-                let mut stream = stream;
+-                while let Some(chunk) = stream.next().await {
+-                    match chunk {
+-                        Ok(bytes) => {
+-                            if tx.send(Ok(bytes)).is_err() {
+-                                break;
+-                            }
+-                        }
+-                        Err(e) => {
+-                            let _ = tx.send(Err(format!("Stream error: {}", e)));
+-                            break;
+-                        }
++    async fn route_transparent_global_fifo(
++        &self,
++        headers: Option<&HeaderMap>,
++        path: &str,
++        method: &Method,
++        body: &serde_json::Value,
++    ) -> Response {
++        let start = Instant::now();
++        let request_model = body
++            .get("model")
++            .and_then(serde_json::Value::as_str)
++            .unwrap_or(DEFAULT_MODEL_KEY);
++        let failed_worker = Arc::new(Mutex::new(None::<String>));
++        let mut retry_config = self.retry_config.clone();
++        retry_config.max_retries = 2;
++
++        let response = RetryExecutor::execute_response_with_retry(
++            &retry_config,
++            |_attempt| {
++                let failed_worker = failed_worker.clone();
++                async move {
++                    let excluded = failed_worker
++                        .lock()
++                        .expect("failed-worker state poisoned")
++                        .clone();
++                    let admission = self
++                        .global_fifo
++                        .as_ref()
++                        .expect("global FIFO disappeared while routing");
++                    let assignment = match admission
++                        .acquire(
++                            request_model,
++                            path,
++                            content_length(headers),
++                            body,
++                            excluded.as_deref(),
++                        )
++                        .await
++                    {
++                        Ok(assignment) => assignment,
++                        Err(error) => return admission_error_response(error),
++                    };
++                    let worker = assignment.worker;
++                    let response = self
++                        .send_transparent_with_lease(
++                            headers,
++                            path,
++                            method,
++                            body,
++                            worker.clone(),
++                            RequestLease::Admission {
++                                _lease: assignment.lease,
++                            },
++                        )
++                        .await;
++                    let status = response.status();
++                    worker.record_outcome(status.is_success() || status.is_client_error());
++                    if is_retryable_status(status) {
++                        *failed_worker.lock().expect("failed-worker state poisoned") =
++                            Some(worker.url().to_string());
+                     }
++                    response
+                 }
+-            });
++            },
++            |response, attempt| {
++                response
++                    .extensions()
++                    .get::<TerminalAdmissionResponse>()
++                    .is_none()
++                    && attempt == 0
++                    && is_retryable_status(response.status())
++            },
++            |delay, attempt| {
++                RouterMetrics::record_retry(path);
++                RouterMetrics::record_retry_backoff_duration(delay, attempt);
++                RouterMetrics::record_admission_retry(request_model);
++            },
++            || RouterMetrics::record_retries_exhausted(path),
++        )
++        .await;
+ 
+-            let stream = UnboundedReceiverStream::new(rx);
+-            let body = Body::from_stream(stream);
++        if response.status().is_success() {
++            RouterMetrics::record_request(path);
++            RouterMetrics::record_generate_duration(start.elapsed());
++        } else if !is_retryable_status(response.status()) {
++            RouterMetrics::record_request_error(path, "non_retryable_error");
++        }
++        response
++    }
+ 
+-            let mut response = Response::new(body);
+-            *response.status_mut() = status;
+-            *response.headers_mut() = response_headers;
+-            response
++    async fn send_transparent_with_lease(
++        &self,
++        headers: Option<&HeaderMap>,
++        path: &str,
++        method: &Method,
++        body: &serde_json::Value,
++        worker: Arc<dyn Worker>,
++        lease: RequestLease,
++    ) -> Response {
++        let url = worker.endpoint_url(path);
++        let mut request_builder = match *method {
++            Method::GET => self.client.get(&url),
++            Method::POST => self.client.post(&url),
++            Method::PUT => self.client.put(&url),
++            Method::DELETE => self.client.delete(&url),
++            Method::PATCH => self.client.patch(&url),
++            Method::HEAD => self.client.head(&url),
++            _ => {
++                return (
++                    StatusCode::METHOD_NOT_ALLOWED,
++                    format!("Method {method} not supported"),
++                )
++                    .into_response();
++            }
++        };
++        request_builder = dp_utils::add_dp_rank_header(request_builder, worker.dp_rank());
++        if !body.is_null() {
++            request_builder = request_builder.json(body);
++        }
++        if let Some(ref key) = self.api_key {
++            request_builder = request_builder.header("Authorization", format!("Bearer {key}"));
++        }
++
++        let backend = match otel_http::send_client_request(
++            request_builder,
++            headers,
++            ClientRequestOptions {
++                method: method.as_str(),
++                url: &url,
++                route: Some(path),
++                request_phase: Some("inference"),
++            },
++        )
++        .await
++        {
++            Ok(response) => response,
++            Err(error) => {
++                return (
++                    StatusCode::BAD_GATEWAY,
++                    format!("Backend request failed: {error}"),
++                )
++                    .into_response();
++            }
++        };
++
++        let status = backend.status();
++        let backend_headers = backend.headers().clone();
++        let stream = GuardedResponseStream {
++            inner: Box::pin(backend.bytes_stream()),
++            _lease: lease,
++        };
++        let mut builder = Response::builder().status(status.as_u16());
++        for (name, value) in &backend_headers {
++            if name != "transfer-encoding" && name != "content-length" {
++                builder = builder.header(name, value);
++            }
+         }
++        builder
++            .body(Body::from_stream(stream))
++            .unwrap_or_else(|error| {
++                (
++                    StatusCode::INTERNAL_SERVER_ERROR,
++                    format!("Failed to build response: {error}"),
++                )
++                    .into_response()
++            })
+     }
+ 
+     pub async fn add_worker(&self, worker_url: &str) -> Result<String, String> {
+@@ -1659,6 +1915,11 @@ impl RouterTrait for Router {
+         body: serde_json::Value,
+     ) -> Response {
+         debug!("Transparent proxy: routing {} {} to backend", method, path);
++        if self.global_fifo.is_some() && is_generation_route(path) {
++            return self
++                .route_transparent_global_fifo(headers, path, method, &body)
++                .await;
++        }
+ 
+         // Select a worker (filter by availability like select_worker_for_model)
+         let all_workers = self.worker_registry.get_all();
+@@ -1693,83 +1954,22 @@ impl RouterTrait for Router {
+             }
+         };
+ 
+-        let worker: &dyn Worker = workers[worker_idx].as_ref();
+-        let url = worker.endpoint_url(path);
+-
+-        debug!("Transparent proxy: forwarding to {}", url);
+-
+-        // Build the request
+-        let mut request_builder = match *method {
+-            Method::GET => self.client.get(&url),
+-            Method::POST => self.client.post(&url),
+-            Method::PUT => self.client.put(&url),
+-            Method::DELETE => self.client.delete(&url),
+-            Method::PATCH => self.client.patch(&url),
+-            Method::HEAD => self.client.head(&url),
+-            _ => {
+-                return (
+-                    StatusCode::METHOD_NOT_ALLOWED,
+-                    format!("Method {} not supported", method),
+-                )
+-                    .into_response();
+-            }
+-        };
+-
+-        // Add X-data-parallel-rank header for DP-aware routing
+-        request_builder = dp_utils::add_dp_rank_header(request_builder, worker.dp_rank());
+-
+-        // Add JSON body if not null/empty
+-        if !body.is_null() {
+-            request_builder = request_builder.json(&body);
+-        }
+-
+-        // Add authorization if configured
+-        if let Some(ref key) = self.api_key {
+-            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+-        }
+-
+-        // Send request
+-        match otel_http::send_client_request(
+-            request_builder,
+-            headers,
+-            ClientRequestOptions {
+-                method: method.as_str(),
+-                url: &url,
+-                route: Some(path),
+-                request_phase: Some("inference"),
+-            },
+-        )
+-        .await
+-        {
+-            Ok(response) => {
+-                let status = response.status();
+-                let headers = response.headers().clone();
+-
+-                // Stream the response body
+-                let body = Body::from_stream(response.bytes_stream());
+-                let mut response_builder = Response::builder().status(status.as_u16());
+-
+-                for (name, value) in headers.iter() {
+-                    if name != "transfer-encoding" && name != "content-length" {
+-                        response_builder = response_builder.header(name, value);
+-                    }
+-                }
+-
+-                match response_builder.body(body) {
+-                    Ok(response) => response,
+-                    Err(e) => (
+-                        StatusCode::INTERNAL_SERVER_ERROR,
+-                        format!("Failed to build response: {}", e),
+-                    )
+-                        .into_response(),
+-                }
+-            }
+-            Err(e) => (
+-                StatusCode::BAD_GATEWAY,
+-                format!("Backend request failed: {}", e),
++        let worker = workers[worker_idx].clone();
++        let response = self
++            .send_transparent_with_lease(
++                headers,
++                path,
++                method,
++                &body,
++                worker.clone(),
++                RequestLease::Inflight {
++                    _guard: InflightGuard::new(worker.clone(), path),
++                },
+             )
+-                .into_response(),
+-        }
++            .await;
++        let status = response.status();
++        worker.record_outcome(status.is_success() || status.is_client_error());
++        response
+     }
+ }
+ 
+@@ -1804,6 +2004,7 @@ mod tests {
+             circuit_breaker_config: CircuitBreakerConfig::default(),
+             _worker_loads: Arc::new(rx),
+             _load_monitor_handle: None,
++            global_fifo: None,
+         }
+     }
+ 
+@@ -1876,6 +2077,7 @@ mod tests {
+             circuit_breaker_config: CircuitBreakerConfig::default(),
+             _worker_loads: Arc::new(rx),
+             _load_monitor_handle: None,
++            global_fifo: None,
+         }
+     }
+ 
+-- 
+2.53.0
+
