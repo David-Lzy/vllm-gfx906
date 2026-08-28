@@ -1,0 +1,37 @@
+From d4cf54f32d53270516cf6128fe21eafaeb8ac595 Mon Sep 17 00:00:00 2001
+From: David-Lzy <li19931020li@gmail.com>
+Date: Fri, 28 Aug 2026 15:14:12 +0930
+Subject: [PATCH 2/2] metrics: refine router dispatch latency buckets
+
+---
+ src/metrics.rs | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/metrics.rs b/src/metrics.rs
+index 54a674f..cd9a6bd 100644
+--- a/src/metrics.rs
++++ b/src/metrics.rs
+@@ -298,6 +298,11 @@ pub fn start_prometheus(config: PrometheusConfig) {
+         0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 45.0,
+         60.0, 90.0, 120.0, 180.0, 240.0,
+     ];
++    let dispatch_duration_matcher =
++        Matcher::Full(String::from("vllm_router_dispatch_duration_seconds"));
++    let dispatch_duration_bucket = [
++        0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.01,
++    ];
+ 
+     let ip_addr: IpAddr = config
+         .host
+@@ -310,6 +315,8 @@ pub fn start_prometheus(config: PrometheusConfig) {
+         .upkeep_timeout(Duration::from_secs(5 * 60))
+         .set_buckets_for_metric(duration_matcher, &duration_bucket)
+         .expect("failed to set duration bucket")
++        .set_buckets_for_metric(dispatch_duration_matcher, &dispatch_duration_bucket)
++        .expect("failed to set dispatch duration bucket")
+         .install()
+         .expect("failed to install Prometheus metrics exporter");
+ }
+-- 
+2.53.0
+
