@@ -1,0 +1,2 @@
+[files]
+extend-exclude = ["tools/gfx906-router-lab/**/patches/*.patch"]

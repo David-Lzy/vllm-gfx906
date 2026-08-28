@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 """Aggregate one Phase 166 Router A/B stage and evaluate its gates."""
 
@@ -7,10 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import statistics
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 ARMS = ("official-rr", "patched-rr", "least-inflight", "global-fifo")
 QUICK_SCENARIOS = tuple(

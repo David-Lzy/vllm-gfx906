@@ -9,12 +9,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
+
+import regex as re
 
 OFFICIAL_IMAGE = (
     "vllm/vllm-router@sha256:"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 """CPU-only HTTP contract for Phase 166 global FIFO admission."""
 
@@ -10,7 +11,6 @@ import collections
 import concurrent.futures
 import http.client
 import json
-import re
 import subprocess
 import threading
 import time
@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 MODEL_ID = "mock-qwen35"
 WORKER_PORTS = (18210, 18211, 18212, 18213)

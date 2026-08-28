@@ -15,7 +15,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import statistics
 import struct
 import subprocess
@@ -26,6 +25,8 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 SAMPLE_METRICS = {
     "vllm:num_requests_running",
