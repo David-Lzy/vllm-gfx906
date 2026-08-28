@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
-import re
 import subprocess
 import threading
 import time
@@ -19,6 +18,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 MODEL_ID = "mock-qwen35"
 WORKER_PORTS = (18110, 18111, 18112, 18113)

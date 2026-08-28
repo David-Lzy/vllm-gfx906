@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import statistics
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 ARM_PATTERN = re.compile(
     r"^(official-rr|patched-rr|least-inflight|queue-aware)-"

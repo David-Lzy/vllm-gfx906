@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
+import binascii
 import concurrent.futures
 import contextlib
 import hashlib
 import json
 import math
 import os
-import re
 import statistics
 import struct
 import subprocess
@@ -26,6 +25,8 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import regex as re
 
 SAMPLE_METRICS = {
     "vllm:num_requests_running",
@@ -119,7 +120,8 @@ def png_data_url(seed: int, size: int = 256) -> str:
     data += chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
     data += chunk(b"IDAT", zlib.compress(bytes(rows), level=6))
     data += chunk(b"IEND", b"")
-    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    encoded = binascii.b2a_base64(data, newline=False).decode("ascii")
+    return "data:image/png;base64," + encoded
 
 
 def fixed_workload(
