@@ -419,6 +419,7 @@ async def issue_request(
     semaphore: asyncio.Semaphore,
     executor: concurrent.futures.Executor,
     round_number: int,
+    response_dir: Path | None,
 ) -> dict[str, Any]:
     encoded = item.wire_body or json.dumps(
         item.body, separators=(",", ":"), ensure_ascii=False
@@ -437,6 +438,15 @@ async def issue_request(
     completion_tokens, prompt_tokens, nonempty, response_sha = response_summary(
         response
     )
+    response_relpath = None
+    if response_dir is not None:
+        response_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", item.request_id)[:160]
+        response_path = response_dir / f"r{round_number:02d}-{safe_id}.json"
+        temporary_path = response_path.with_suffix(response_path.suffix + ".tmp")
+        temporary_path.write_bytes(response)
+        temporary_path.replace(response_path)
+        response_relpath = str(response_path.relative_to(response_dir.parent))
     return {
         "round": round_number,
         "request_id": item.request_id,
@@ -446,6 +456,7 @@ async def issue_request(
         "payload_bytes": len(encoded),
         "response_bytes": len(response),
         "response_sha256": response_sha,
+        "response_relpath": response_relpath,
         "completion_tokens": completion_tokens,
         "prompt_tokens": prompt_tokens,
         "nonempty": nonempty,
@@ -786,6 +797,7 @@ async def run_round(
                 semaphore,
                 executor,
                 round_number,
+                args.response_dir,
             )
             for item in items
         ]
@@ -815,6 +827,7 @@ async def run_round(
         "completion_tokens_per_second": completion_tokens / makespan
         if makespan
         else None,
+        "completion_tokens": completion_tokens,
         "latency_p50_seconds": percentile(latencies, 0.50),
         "latency_p95_seconds": percentile(latencies, 0.95),
         "latency_p99_seconds": percentile(latencies, 0.99),
@@ -912,6 +925,9 @@ async def async_main(args: argparse.Namespace) -> int:
         ),
         "median_completion_tokens_per_second": median_present(
             [summary["completion_tokens_per_second"] for summary in valid_rounds]
+        ),
+        "median_completion_tokens": median_present(
+            [float(summary["completion_tokens"]) for summary in valid_rounds]
         ),
         "median_makespan_seconds": median_present(
             [summary["makespan_seconds"] for summary in valid_rounds]
@@ -1045,7 +1061,7 @@ def parse_args() -> argparse.Namespace:
         help="Homogeneous fixed workload class; ignored for replay input",
     )
     parser.add_argument(
-        "--concurrency", type=int, choices=(16, 32, 40, 64), required=True
+        "--concurrency", type=int, choices=(1, 8, 16, 32, 40, 64), required=True
     )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--max-num-seqs", type=int, default=8)
@@ -1053,6 +1069,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=16)
     parser.add_argument("--sample-interval", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument(
+        "--response-dir",
+        type=Path,
+        help="Private directory for atomic raw response evidence",
+    )
     args = parser.parse_args()
     if len(args.worker_metrics) != 4:
         parser.error("--worker-metrics must be supplied exactly four times")
