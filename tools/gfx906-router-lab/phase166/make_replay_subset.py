@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--materialize-payloads",
+        action="store_true",
+        help="Copy selected payloads below the output directory for portable replay",
+    )
     args = parser.parse_args()
 
     source_root = args.input.resolve().parent
@@ -68,12 +74,21 @@ def main() -> int:
         raise SystemExit("subset must contain exactly 40 unique requests")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    payload_root = args.output.parent / f"{args.output.stem}-payloads"
+    if args.materialize_payloads:
+        payload_root.mkdir(parents=True, exist_ok=True)
     normalized: list[dict[str, Any]] = []
     for row in sorted(selected, key=lambda item: int(item["request_index"])):
         payload = (source_root / str(row["payload_relpath"])).resolve()
         if not payload.is_relative_to(source_root) or not payload.is_file():
             raise SystemExit(f"invalid payload path: {payload}")
         item = dict(row)
+        if args.materialize_payloads:
+            materialized = payload_root / (
+                f"request_{int(row['request_index']):04d}{payload.suffix}"
+            )
+            shutil.copy2(payload, materialized)
+            payload = materialized.resolve()
         item["payload_relpath"] = os.path.relpath(payload, args.output.parent.resolve())
         item["phase166_subset_stratum"] = next(
             name
@@ -95,6 +110,7 @@ def main() -> int:
         "image_count_max": max(int(row["image_count"]) for row in normalized),
         "payload_bytes_min": min(int(row["payload_bytes"]) for row in normalized),
         "payload_bytes_max": max(int(row["payload_bytes"]) for row in normalized),
+        "payloads_materialized": args.materialize_payloads,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

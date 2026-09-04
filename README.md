@@ -28,6 +28,14 @@ profile is Qwen3.5 9B AWQ with text and image inputs. Qwen3.8 27B AWQ is
 functionally compatible in targeted TP4 configurations, but remains a
 development performance path rather than the default production model on MI50.
 
+The release is functionally validated, but it is not the fastest known runtime
+for every workload. In the Phase 168 production-shaped Qwen3.5 replay, the
+v0.23 ExLlama reference completed the high-image, long-output workload 78.1%
+sooner than the selected v0.28 backend. Its attempted live promotion was
+externally interrupted and rolled back, so v0.28 remains the selected runtime
+while a clean canary is pending. See the
+[Phase 168 report](docs/gfx906/phase-168-qwen35-v028-real-load-backend.md).
+
 The project does not publish a floating `latest` image. Build and deployment
 artifacts are only meaningful when accompanied by an immutable source commit,
 image digest, model revision, and hardware result.

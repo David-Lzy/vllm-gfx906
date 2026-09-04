@@ -10,12 +10,12 @@ does not imply support for every checkpoint using the same architecture.
 | OpenAI-compatible text serving | supported | yes | Text C1/C8/C16/C32 and soak |
 | Qwen image input | supported | yes | One/two 256-square image release gate |
 | JSON constrained output | supported | yes | Deterministic 3/3 gate |
-| Qwen3.5 9B AWQ | production profile | yes | Four TP1 workers and digest-pinned Router |
+| Qwen3.5 9B AWQ | supported with performance caveat | yes | Four TP1 workers and digest-pinned Router; v0.28 is functional but substantially slower than the v0.23 reference on the Phase 168 high-image, long-output replay |
 | Qwen3.8 27B AWQ TP4 | development profile | opt-in | Text/image/JSON and 32K cache-hit decode |
 | Qwen3.8 packed INT8 TP4 | development profile | opt-in | Numerical fix and Phase 153 comparison |
 | Qwen3.6 27B AWQ TP4 | compatibility profile | opt-in | Text/image/JSON and SplitKV smoke |
 | Qwen3.5 35B-A3B BF16 TP4 | compatibility profile | opt-in | Release text/image/JSON smoke passed; expert parallelism rejected |
-| `gfx906_gptq` backend | supported | selected in examples | Classic W4A16 and packed INT8 paths |
+| `gfx906_gptq` backend | supported | selected in examples | Classic W4A16 and packed INT8 paths; selection does not imply parity with the v0.23 ExLlama runtime on production-shaped multimodal load |
 | SplitKV head-256 | supported | off | Enable with `VLLM_ROCM_ENABLE_GFX906_SPLITKV=1` |
 | SplitKV-29 | long-context profile | off | Add max-splits 32 and force-splits 29 |
 | Qwen3.6 fused QK/MRoPE/gate | experimental | off | Compiles with patched Triton; mixed traffic regressed |
@@ -30,3 +30,9 @@ does not imply support for every checkpoint using the same architecture.
 The routine release gate deliberately uses text plus one/two 256-square images.
 High image counts, 4096-square grids, and video are workload-specific capacity
 tests and are not implied by this matrix.
+
+Phase 168 additionally exercised a 40-request C32 replay containing 8--48
+images per multimodal request and long generation budgets. The v0.23 reference
+completed that workload 78.1% sooner than the selected v0.28 backend. See the
+[Phase 168 report](phase-168-qwen35-v028-real-load-backend.md) before selecting
+a runtime for a similar workload.
